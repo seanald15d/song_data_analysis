@@ -72,6 +72,7 @@ for(i in 1960:2009){
   # cap all years at 25 for false and true (charted)
   while(length(data_found_true$X) < 25){
     j <- j + 1
+    #accept missing duration metadata info, but not missing lyrics if need be
     data_sub <- subset(data_true, between(release_date, i-1, i) & Lyrics != '' & stanzas > 1 & duration == '')
     data_found_true <- rbind(data_found_true, data_sub[j,])
   }
@@ -157,6 +158,7 @@ dataset$track_number[Bs] <- temp
 
 dataset$track_number <- as.numeric(dataset$track_number)
 
+# in this particular set, some information was lost, so add in manually
 dataset$track_number[1605] <- 21
 dataset$track_number[2458] <- 11
 dataset$track_number[2468] <- 15
@@ -166,6 +168,7 @@ dataset$track_number[2500] <- 12
 ```
 
 ```{r}
+# clear workspace for future quantification of features
 rm_list <- objects()
 keep <- which(rm_list == 'dataset')
 rm_list <- rm_list[-c(keep)]
@@ -358,6 +361,7 @@ dset <- read.csv('pos_songs.csv', stringsAsFactors = FALSE)[-(1:2)]
 
 library(dplyr)
 
+# calculate mean stanza info
 dset %>% group_by(chart) %>%
   summarise(
     mean_stanza = mean(stanzas)
@@ -393,7 +397,7 @@ library(reshape2)
 Here's an example of the data plotted by duration of song and year charted (1 = charted, 0 = uncharted)
 
 ```{r}
-# Scatterplot of data
+# Scatterplot of duration data over time
 ggplot(dset, aes(x=year_chart, y=duration, color=chart)) +
   geom_point() +
   labs(
@@ -423,7 +427,7 @@ Examining this table, which shows the mean duration for charted and uncharted so
 What we'll plot then is the mean duration for each year (from charted and uncharted songs) and two linear models, one that explains the relationship between charted songs' duration and the time that goes by and the other explaining this relationship with uncharted songs. It's important to note that, while we are choosing to compare mean duration over time to linear regression models of uncharted and charted songs' relationships between these features, we are not doing so for predictive purposes, merely to see how charted and uncharted songs tend to behave over time. Moreover, these representations of the linear relationship between these features may not be the best representations, but we'll touch on that later.
 
 ```{r}
-# group data by chart AND year charted
+# group data by chart AND year charted and calculate mean for plot simplification and comparison
 c_nc_mean_year <- dset %>% group_by(chart, year_chart) %>%
   summarise(
     mean_dur = mean(duration)
@@ -455,7 +459,7 @@ What we can see from this chart is that our hypothesis was generally correct. Pl
 So what other changes do we notice over time? As with our hypothesis about duration, we would assume that songs, charted and uncharted, get more repetitive over time. We would also imagine that charted songs disply even greater amounts of repetition than uncharted ones.
 
 ```{r}
-# Scatterplot of data
+# Scatterplot of proportion of repeated stanzas over time
 ggplot(dset, aes(x=year_chart, y=rep, color=chart)) +
   geom_point() +
   labs(
@@ -485,14 +489,14 @@ Much like the duration information we have, there is little difference between c
 However, again, as with duration, time seems to play a role in helping us see patterns between charted and uncharted songs' repetition. So let's again plot each year's mean repetition score (for charted and uncharted songs) and then add a linear model that explains the relationship between charted songs' year charted and their repetition score and one that explains that relationship for uncharted songs. Again, the hypothesis would be that uncharted songs do not adjust well to the trend that charted songs may or may not be following or setting, or that they may be setting/following a different trend entirely.
 
 ```{r}
-# group data by chart and year
+# group data by chart and year and calculate mean and sd repetition
 c_nc_year_rep <- dset %>% group_by(chart, year_chart) %>%
   summarise(
     mean_rep = mean(rep),
     sd_rep = sd(rep)
   )
 
-# Run these lines together to compare both charts
+# plot mean repetition against time and including each set's lm line for comparison of general trend
 ggplot() +
   geom_line(aes(x = year_chart, y = mean_rep, colour = chart), data = c_nc_year_rep) +
   geom_smooth(aes(x = year_chart, y = rep, col = chart), data = dset_chart, method = "lm") +
@@ -760,7 +764,7 @@ knnFit <- train(chart ~ ., data = training_set, method = "knn", trControl = ctrl
                 preProcess = c("center", "scale"), tuneLength = 20)
 
 knnFit
-#knnFit method lets us know that 5 k will prove most accurate
+#knnFit method lets us know that 35 k will prove most accurate
 library(class)
 accuracy_table <- tibble()
 for(i in 1:100){
@@ -856,7 +860,7 @@ for(i in 1:100){
     accuracy <- (cm[1,1] + cm[2,2])/(cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
     return(accuracy)
   })
-  
+  # add data over five folds to table
   for(i in 1:5){
     lsvm_tb <- tibble('fold' = i, 'method' = 'svm_fold', "accuracy" = lsvm_cv[[i]])
     accuracy_table <- rbind(accuracy_table, lsvm_tb)
@@ -872,14 +876,16 @@ for(i in 1:100){
     accuracy_table <- rbind(accuracy_table, rf_tb)
   }
 }
-
+# encode fold as categorical variable
 accuracy_table$fold <- as.factor(accuracy_table$fold)
 
+# group data by method and fold and calculate mean accuracy
 t <- accuracy_table %>% group_by(method, fold) %>%
   summarise(
     mean_accuracy = mean(accuracy)
   )
 
+# gather accuracy scores and display statistical info
 a <- accuracy_table %>% group_by(method) %>%
   summarise(
     mean_accuracy = mean(accuracy),
@@ -890,13 +896,14 @@ a <- accuracy_table %>% group_by(method) %>%
 
 a
 
+# plot evaluations of each model's accuracy
 ggplot(data = t, aes(x = fold, y = mean_accuracy, colour = method, group = method)) +
   geom_point() + geom_line() +
   labs(
     x = "Fold",
     y = "Mean Accuracy (from 100 x)",
     title = "Mean Accuracy from 100 x 5-fold Cross Validation",
-    subtitle = "K Nearest Neighbor, Naive-Bayes, Random Forest DT, K-SVM"
+    subtitle = "K Nearest Neighbor, Naive-Bayes, Random Forest DT, K-SVM, Logistic Regression, SVM"
   )
 
 ```
@@ -1121,6 +1128,8 @@ Now we need to determine the number of topic models to make for charted and unch
 
 ```{r}
 
+# evaluate our many models for charted based on semantic coherence, heldout likelihood, residual performance, and lower bound
+# through research, I discovered that the metrics sought here are good indicators of different model sizes' success.
 k_result <- many_models %>%
   mutate(exclusivity = map(topic_model, exclusivity),
          semantic_coherence = map(topic_model, semanticCoherence, songs_sparse),
@@ -1129,6 +1138,7 @@ k_result <- many_models %>%
          bound =  map_dbl(topic_model, function(x) max(x$convergence$bound)),
          lfact = map_dbl(topic_model, function(x) lfactorial(x$settings$dim$K)),
          lbound = bound + lfact,
+         # set iterations to length of bound
          iterations = map_dbl(topic_model, function(x) length(x$convergence$bound)))
 
 un_k_result <- un_many_models %>%
@@ -1141,6 +1151,7 @@ un_k_result <- un_many_models %>%
          lbound = bound + lfact,
          iterations = map_dbl(topic_model, function(x) length(x$convergence$bound)))
 
+# plotting diagnostics
 k_result %>%
   transmute(K,
             `Lower bound` = lbound,
@@ -1169,6 +1180,7 @@ un_k_result %>%
        y = NULL,
        title = "Model diagnostics by number of topics (Uncharted)")
 
+# plotting sematic coherence against exclusivity to choose number of topics
 k_result %>%
   select(K, exclusivity, semantic_coherence) %>%
   filter(K %in% c(10, 20, 40, 50, 60, 70, 80, 100, 120, 150)) %>%
@@ -1198,7 +1210,7 @@ un_k_result %>%
 We're checking for a lot with these graphs. Semantic coherence measures the frequency of probable words in a given topic co-occurring together across our corpus. We want that to be high when determining the number of topics to make. We also want held-out likelihood to be high, meaning that the topic model will perform well on data that we have withheld from the model for testing. We want our residuals to be low though. Based on this first graph, we might be okay setting 120 topics for our model. The second graph, which plots exclusivity scores against semantic coherence scores, seems to suggest this too. As you can see the grouping of dots that have the highest exclusivity (highest degree of exclusion among words per topics) and highest semantic coherence represent our model when trained with 120 clusters. So, let's build our new model with 120 clusters and see some results!
 
 ```{r}
-
+# choosing topic model with 120 topics
 topic_model <- k_result %>%
   filter(K == 120) %>%
   pull(topic_model) %>%
@@ -1206,6 +1218,7 @@ topic_model <- k_result %>%
 
 topic_model
 
+# separate charted topic model into beta and gamma
 td_beta <- tidy(topic_model)
 
 td_gamma <- tidy(topic_model, matrix = "gamma",
@@ -1219,6 +1232,7 @@ library(tidyverse)
 library(scales)
 library(knitr)
 
+# derive top terms from beta
 top_terms <- td_beta %>%
   arrange(beta) %>%
   group_by(topic) %>%
@@ -1229,6 +1243,7 @@ top_terms <- td_beta %>%
   mutate(terms = map(terms, paste, collapse = ", ")) %>% 
   unnest()
 
+# derive distribution information from gamma scores
 gamma_terms <- td_gamma %>%
   group_by(topic) %>%
   summarise(gamma = mean(gamma)) %>%
@@ -1237,6 +1252,7 @@ gamma_terms <- td_gamma %>%
   mutate(topic = paste0("Topic ", topic),
          topic = reorder(topic, gamma))
 
+# get top 20 topics by gamma scores
 gamma_terms %>%
   top_n(20, gamma) %>%
   ggplot(aes(topic, gamma, label = terms, fill = topic)) +
