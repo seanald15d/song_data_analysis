@@ -6,32 +6,29 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
 ```
 
-In this study, I have written a python script that scrapes Playback.fm country music song ranking charts from the years 1960 - 2009 (covers 5 decades). While the script was operating, it was attempting to grab lyrics for the charted songs and metadata, such as whether the song was from an album or single, its album/single release name, and its duration. During the metadata acquisition stage, I was also asking the script to pick up songs that were not charted but on the same release (A/B side, other tracks on a full-length album). In this way, I built a control group (not-charted songs) and a test group (charted songs). The goal of the project is to see how country songs change over time and also to see if those changes occur differently (in kind or degree) to those observed in not-charted songs. Thus, while gathering features, I will also be attempting to implement a machine learning classifier to determing which features most help it predict whether songs are charted or not.
+In this study, we employ a python script that scrapes Playback.fm country music song ranking charts from the years 1960 - 2009 (covers 5 decades). While the script was operating, it was attempting to grab lyrics for the charted songs and metadata, such as whether the song was from an album or single, its album/single release name, and its duration. During the metadata acquisition stage, we were also asking the script to pick up songs that were not charted but on the same release (A/B side, other tracks on a full-length album). In this way, we built a control group (uncharted songs) and a test group (charted songs). The goal of the project is to see how country songs change over time and also to see if those changes occur differently (in kind or degree) to those observed in uncharted songs. Thus, while gathering features, we will also be attempting to implement a machine learning classifier to determe which features most help it predict whether songs are charted or not.
 
-In this R document, I first provide the data manipulation I performed to narrow the scope of songs surveyed. Essentially, because early years did not do so well with the lyric and metadata grabbing portion of the Python script, I have capped each year at 50 songs (25 charted and 25 non-charted). In total, 2500 songs will be analyzed.
+In this R document, we first provide the data manipulation we performed to narrow the scope of songs surveyed. Essentially, because early years did not do so well with the lyric and metadata grabbing portion of the Python script (for such reasons as copyright protections on information and a general lack of information on lesser known and/or older songs and artists), we have capped each year at 50 songs (25 charted and 25 uncharted). In total, 2500 songs will be analyzed.
 
 The order of the analysis is such:
 
 1. Data Manipulation
-2. Intial Attempt at Machine Learning Classification with K-SVM
-3. Assessing Change Over Time
+2. Transforming Lyrical Data into Quantitative Features
+3. Tracking Changes over Time and Visualizing Some Other Relationships
+4. Selecting Features and Training and Validating Machine Learning Classifiers
 4. Topic Modelling
-5. Analyzing Repetition in Stanzas
-6. Exploring Parts-Of-Speech Usage
-7. Sentiment Analysis
+5. Sentiment Analysis
 
-```{r, echo=FALSE}
+```{r}
 # libraries needed for data manipulation
 library(tidytext)
 library(dplyr)
-library(ggplot2)
-
 ```
 
-```{r, echo = FALSE}
+```{r}
 
 # create empty buckets before iteration
 data_true_final <- NULL
@@ -122,7 +119,7 @@ dataset$track_number <- gsub("Track '(\\w+)'", perl = TRUE, replacement = '\\1',
 ```
 
 
-```{r, echo = FALSE}
+```{r}
 
 # change time to numeric
 for(i in 1:length(dataset$duration)){
@@ -132,20 +129,12 @@ for(i in 1:length(dataset$duration)){
 
 dataset$duration <- as.numeric(dataset$duration)
 
-# Encoding categorical data
-dataset$album_single <- factor(dataset$album_single,
-                               levels = c('Album', 'Single'),
-                               labels = c(1, 2))
-
 # prepare chart for encoding
 true <- subset(dataset, chart == 'True')
 false <- subset(dataset, chart == 'False')
 true$chart <- 1
 false$chart <- 0
 dataset <- rbind(true, false)
-
-# Encoding the target feature as factor
-dataset$chart = factor(dataset$chart, levels = c(0, 1))
 
 # get meaningful track numbers
 dataset$track_number <- gsub("B\\b", "2", dataset$track_number)
@@ -174,13 +163,9 @@ dataset$track_number[2468] <- 15
 dataset$track_number[2495] <- 17
 dataset$track_number[2500] <- 12
 
-#add decade for grouping later
-dataset <- dataset %>%
-  mutate(decade = year_chart - (year_chart %% 10))
-
 ```
 
-```{r, echo = FALSE}
+```{r}
 rm_list <- objects()
 keep <- which(rm_list == 'dataset')
 rm_list <- rm_list[-c(keep)]
@@ -188,314 +173,12 @@ rm(list = rm_list)
 
 ```
 
-## Initial shot at machine learning classification with K-SVM
+# Extracting Features
+## Song Structure and Repeated words/themes/patterns
 
-A typical Support Vector Machines algorithm is a linear model, meaning it draws a decision boundary as a line meant to separate data. Most linear models, like logistic regression, will draw its linear boundary between the data based on which points are most likely to look like the norm of the data. Think of one dataset as apples and oranges. Most linear models will try to find the most "appley" apple and determine whether other fruits are apples based on their similarity (sometimes closeness on a graph) to that most "appley" apple.
+Musical elements of songs are structured, and so are lyrics (often, even, the lyrics conform to the musical structure). Thus, we have decided to dig deeper into the actual structure of the song lyrics. Breaking each song into stanzas, we can compare each stanza with a string distance metric: Levenshtein Distance. The Levenshtein algorithm uses matrix algebra to calculate the minimum number of edits needed to be made to make one string match another. This algorithm works best (fastest) with small string units, but it can still work well to help us determine how much repetition there is in song stanzas. Songs with higher repretition among stanzas will have a lower mean Levenshtein distance score, while songs with lower repetition will record a higher mean score. For reference, song choruses typically record scores between 0 and 50 edits needed, while verses typically record scores between 150 and 300. 
 
-Support Vector Machines, on the other hand, will find the least "appley" apple and least "orangey" orange and base its linear classifier (the line that splits the data) on the line that is equidistant between these two datapoints.
-
-What happens, though, when you have a non-linear dataset? In other words, what happens when the relationship between your datapoints and your independent variables (i.e. fruits' seed sizes, skin texture, etc.) does not embody a linear relationship? This is where the K of K-Support Vector Machines comes into play.
-
-The "K" stands for kernel. It comes from a math equation that finds the Gaussian Radial-Based Function Kernal. It involves some math, but it essentially is a way to take a set of datapoints that cluster in a circular pattern rather than neatly along a line and to trick them into occupying a space that can be separated by a line.
-
-We are choosing a lot of songs in this project, and I would hypothesize that the relationship between independent variables (such as Type-Token Ratio, number of stanzas, duration of each song) is non-linear, meaning that charted and non-charted songs do not necessarily exhibit direct or inverse relationships between their variables (as one goes up, the other goes up (or down)).
-
-Here's an example of the data plotted by duration of song and year charted (1 = charted, 0 = not charted)
-
-```{r, echo = FALSE}
-# Scatterplot of data
-ggplot(dataset, aes(x=year_chart, y=duration, color=chart)) +
-  geom_point()
-
-```
-
-
-From this simple plot, we can see that there is no way to linearly separate the charted songs from the non-charted songs based upon those songs' duration and the year they were charted.
-
-Let's see what K-SVM might do here.
-
-```{r, echo = FALSE}
-# get independent and dependent variables
-data <- dataset[c(14, 9, 12)]
-# shuffle data
-set.seed(123)
-data <- data[sample(1:nrow(data)),]
-
-# Splitting the dataset into the Training set and Test set
-# install.packages('caTools')
-library(caTools)
-set.seed(123)
-split = sample.split(data$chart, SplitRatio = 0.75)
-training_set = subset(data, split == TRUE)
-test_set = subset(data, split == FALSE)
-
-# Feature Scaling
-training_set[-3] = scale(training_set[-3])
-test_set[-3] = scale(test_set[-3])
-
-# Fitting K-SVM classifier to the Training set and predicting the Test Set Results
-set.seed(123)
-library(e1071)
-classifier = svm(formula = chart ~.,
-                 data = training_set,
-                 type = 'C-classification',
-                 kernel = 'radial')
-
-# Making prediction on test_set
-y_pred <- predict(classifier, newdata = test_set[-3])
-
-# Making the Confusion Matrix
-cm = table(test_set[, 3], y_pred)
-cm
-
-```
-
-Examining the confusion matrix, we can see that our model does not do a very good job of predicting charted songs vs non-charted songs; it predicts correctly only about 56% of the time! This is why we need to experiment with other variables that more pertain to the lyrics of the songs. Were we to run this algorithm with track position as an independent variable, we would get about 86% accuracy from our model, but that is not entirely helpful, since we want to know how the songs themselves differ, lyrically and perhaps structurally. Moreover, the way we built our non-charted song list was by taking whatever songs appeared on the same release as the charted songs and then taking a random selection of 25 of those songs for each year. Thus, track position, for non-charted songs, becomes arbitrary in our dataset.
-
-However, let's still look at how it tries to split the data using the year a song was charted and its duration as independent variables.
-
-```{r, echo = FALSE}
-
-# Visualising the Test set results
-library(ElemStatLearn)
-set = test_set
-X1 = seq(min(set[, 1]) - 1, max(set[, 1]) + 1, by = 0.01)
-X2 = seq(min(set[, 2]) - 1, max(set[, 2]) + 1, by = 0.01)
-
-grid_set = expand.grid(X1, X2)
-colnames(grid_set) = c('year_chart', 'duration')
-y_grid = predict(classifier, newdata = grid_set)
-plot(set[, -3], main = 'Classifier (Test set)',
-     xlab = 'Year Charted', ylab = 'Duration',
-     xlim = range(X1), ylim = range(X2))
-contour(X1, X2, matrix(as.numeric(y_grid), length(X1), length(X2)), add = TRUE)
-points(grid_set, pch = '.', col = ifelse(y_grid == 1, 'springgreen3', 'tomato'))
-points(set, pch = 21, bg = ifelse(set[, 3] == 1, 'green4', 'red3'))
-```
-
-In this example, the red boundaries attempt to encapsulate datapoints that are false (not charted), while the green boundaries attempt to encapsulate those that are true (charted). The boundaries themselves do not do a great job of helping us classify our data. One of the reasons for this is that, over time, charted and non-charted songs seem to get longer.
-
-Here is a chart of the average duration of songs per year:
-
-```{r, echo = FALSE}
-# group data by year charted (or not)
-c_song_year <- dataset[1:1250,] %>% group_by(year_chart)
-nc_song_year <- dataset[1251:2500,] %>% group_by(year_chart)
-
-# Find mean duration for each year and plot
-c_time_mean <- c_song_year %>% summarise(
-  m_dur = round(mean(duration))
-)
-
-nc_time_mean <- nc_song_year %>% summarise(
-  nc_m_dur = round(mean(duration))
-)
-
-# bind data to one frame
-nc_time_mean$c_m_dur <- c_time_mean$m_dur
-
-library(reshape2)
-
-c_time_mean_long <- melt(nc_time_mean, id="year_chart")
-
-```
-
-```{r, echo = FALSE}
-# Plot of mean duration over time for charted and not-charted songs
-ggplot(data = c_time_mean_long,
-       aes(x = year_chart, y = value, colour = variable)) +
-  geom_line()
-
-```
-
-As you can see, one of the reasons that our K-SVM classification model failed (beyond using the "year charted" as an independent variable) is that, regarding duration, both charted and non-charted songs behave similarly over time. While interesting, duration will not help us separate our data. Songs, in general, are getting longer as time goes on.
-
-## Will Topic Modelling Help?
-
-One final question I had, before actually getting into the lyrics, was to see whether or not topic modelling could separate our data.
-
-In the words of literary scholar and digital humanist Paul Barrett, Topic Modeling is:
-
-"...a form of unsupervised machine learning. It is a kind of text mining that doesn't search for particular, predetermined content, but instead 'reads' an entire corpus and extracts a set of topics. Its unclear, and a point of debate, whether the topics are read / discovered from the corpus or whether the topics are 'asserted' as a description of the corpus."
-
-One hypothesis I had at this stage was that perhaps charted and non-charted songs may distinguish themselves based upon the topics that are present in their lyrics.
-
-To get started, we need to reshape some of the data and determine the number of clusters our model should make
-
-
-```{r, echo = FALSE}
-# splitting data into training and test sets for model performance
-library(tm)
-library(ldatuning)
-library(topicmodels)
-set.seed(12345)
-sampling <- sample(1:nrow(dataset), replace = FALSE,size = nrow(dataset)*0.8)
-train_data <- dataset[sampling,]
-
-test_data <- dataset[-sampling,]
-
-# Creating the document-term matrix for train data
-doc.vec_train <- VectorSource(train_data$Lyrics)
-doc.corpus_train <- Corpus(doc.vec_train)
-doc.corpus_train <- tm_map(doc.corpus_train , tolower)
-doc.corpus_train <- tm_map(doc.corpus_train, removePunctuation)
-doc.corpus_train <- tm_map(doc.corpus_train, removeNumbers)
-doc.corpus_train <- tm_map(doc.corpus_train, removeWords, stopwords("english"))
-doc.corpus_train <- tm_map(doc.corpus_train, stripWhitespace)
-
-TDM_train <- TermDocumentMatrix(doc.corpus_train)
-DTM_train <- DocumentTermMatrix(doc.corpus_train)
-
-# Creating the document term matrix for test data
-doc.vec_test <- VectorSource(test_data$Lyrics)
-doc.corpus_test  <- Corpus(doc.vec_test)
-doc.corpus_test  <- tm_map(doc.corpus_test, tolower)
-doc.corpus_test  <- tm_map(doc.corpus_test, removePunctuation)
-doc.corpus_test  <- tm_map(doc.corpus_test, removeNumbers)
-doc.corpus_test  <- tm_map(doc.corpus_test, removeWords, stopwords("english"))
-doc.corpus_test  <- tm_map(doc.corpus_test, stripWhitespace)
-
-TDM_test <- TermDocumentMatrix(doc.corpus_test)
-DTM_test <- DocumentTermMatrix(doc.corpus_test)
-
-# plot the metrics to get number of topics
-system.time({
-  tunes <- FindTopicsNumber(
-    dtm = DTM_train,
-    topics = c(2:15),
-    metrics = c("Griffiths2004", "CaoJuan2009", "Arun2010"),
-    method = "Gibbs",
-    control = list(seed = 12345),
-    mc.cores = 4L,
-    verbose = TRUE
-  )
-})
-
-FindTopicsNumber_plot(tunes)
-
-```
-
-Once we have our document-term-matrix, we can run our topic model using Latent Dirichlet Allocation (LDA). However, when we run this topic model, we have to tell our model how many clusters we want it to make. Rather than guess, there are a few methods for determining the appropriate number of clusters to use. One is the Elbow Method, which involves seeing where, on a graph, the addition of a new cluster will have little change compared to the addition of previous clusters. Looking at the graph above, the most informative metric seems to be the CaJuan2009, which seems to present an elbow at about 4 clusters.
-
-## Topic modeling with 4 clusters
-
-```{r, echo=FALSE}
-# Run the LDA model with 4 clusters
-tidy_df <- tibble()
-for(i in 1:length(dataset$Lyrics)){
-  temp <- tibble("document" = i)
-  word_freq <- dataset[i,] %>%
-    unnest_tokens(word, Lyrics) %>%
-    anti_join(stop_words) %>%
-    count(word, sort = TRUE)
-  temp2 <- cbind(temp, word_freq)
-  tidy_df <- rbind(tidy_df, temp2)
-}
-
-dtm <- tidy_df %>%
-  cast_dtm(document, word, n)
-
-country_lda_4 <- LDA(dtm, k = 4, control = list(seed=123))
-
-# convert topic model topics to tidy matrix
-country_topics_4 <- tidy(country_lda_4, matrix="beta")
-
-country_top_terms_4 <- country_topics_4 %>%
-  group_by(topic) %>%
-  top_n(15, beta) %>%
-  ungroup() %>%
-  arrange(topic, -beta)
-
-country_top_terms_4 %>%
-  mutate(term = reorder(term, beta)) %>%
-  ggplot(aes(term, beta, fill = factor(topic))) +
-  geom_col(show.legend = FALSE) +
-  facet_wrap(~ topic, scales = "free") +
-  coord_flip() +
-  labs(x = NULL, y = expression(beta),
-       title = "Beta Matrix: Highest word probabilities for each topic",
-       subtitle = "Different words are associated with different topics")
-
-```
-
-Alright, so we have our topic models! They each have overlapping words, but they also seem fairly distinct from one another. What we can do now is see, for each song, what topic most contributes to it lyrically!
-
-```{r, echo = FALSE}
-# get a tidy dataframe of the topic gamma scores (which score distinction)
-country_documents <- tidy(country_lda_4, matrix = "gamma")
-
-# organize by which topic is most distinct in each song
-song_classifications <- country_documents %>%
-  group_by(document) %>%
-  top_n(1, gamma) %>%
-  ungroup()
-
-# convert topic number to numeric for sorting and analysis
-song_classifications$document <- as.numeric(song_classifications$document)
-song_classifications_sorted <- song_classifications[order(song_classifications$document),]
-
-# see distribution of topics per charted and non charted songs
-charted <- song_classifications_sorted[1:1250,] %>%
-  count(topic, sorted=TRUE)
-not_charted <- song_classifications_sorted[1251:2500,] %>%
-  count(topic, sorted=TRUE)
-
-com <- rbind(charted, not_charted)
-com
-
-```
-
-Unfortunately, it seems that topics (generated from a model like LDA) seem to be distributed fairly evenly acorss charted and non-charted country songs, so this feature may not help us much either with classification.
-
-We can still see how it changes over time though!
-
-```{r, echo = FALSE}
-# cbind the topic number to the dataset dataframe
-dataset$topic <- song_classifications_sorted$topic
-
-# define custom mode function
-getmode <- function(v) {
-  uniqv <- unique(v)
-  uniqv[which.max(tabulate(match(v, uniqv)))]
-}
-
-# group data by year charted (or not)
-c_song_year <- dataset[1:1250,] %>% group_by(year_chart)
-nc_song_year <- dataset[1251:2500,] %>% group_by(year_chart)
-
-# Find most frequent topic for each year and plot
-c_topic_mode <- c_song_year %>% summarise(
-  mode_topic = getmode(topic)
-)
-
-nc_topic_mode <- nc_song_year %>% summarise(
-  nc_mode_topic = getmode(topic)
-)
-
-# bind data to one frame
-nc_topic_mode$c_mode_topic <- c_topic_mode$mode_topic
-
-library(reshape2)
-
-c_topic_mode_long <- melt(nc_topic_mode, id="year_chart")
-
-```
-
-```{r, echo = FALSE}
-# Run these lines together to compare both charts
-ggplot(data = c_topic_mode_long,
-       aes(x = year_chart, y = value, colour = variable)) +
-  geom_line()
-
-```
-
-## Where to go from here?
-
-# Song Structure and Repeated words/themes/patterns
-
-Because methods more pertaining to song metadata do not seem to be able to separate the charted from the non-charted songs, we have decided to dig deeper into the actual structure of the songs. Breaking each song into stanzas, we can compare each stanza with a string distance metric: Levenshtein Distance. The Levenshtein algorithm uses matrix algebra to calculate the minimum number of edits needed to be made to make one string match another. This algorithm works best (fastest) with small string units, but it can still work well to help us determine how much repetition there is in songs. Songs with higher repretition among stanzas will have a lower mean Levenshtein distance score, while songs with lower repetition will record a higher mean score. For reference, song choruses typically record scores between 0 and 50 edits needed, while verses typically record scores between 150 and 300. 
-
-```{r, echo = FALSE}
+```{r}
 # Song structure and repetition
 # We could maybe use levenshtein distance to measure either stanzas against stanzas or lines against lines and then calculate a mean "distance" for each song. Perhaps charted songs will have a higher mean distance? (less similar in structure)
 library(stringdist)
@@ -539,8 +222,8 @@ for(v in 1:length(dataset$Lyrics)){
   for(i in 1:length(f_stanzas$Stanza)){
     for(j in i+1:length(f_stanzas$Stanza)){
       s_dist <- stringdist(f_stanzas$Stanza[i], f_stanzas$Stanza[j])
-      tb <- tibble("Doc" = v, "Index" = i, "String1" = f_stanzas$Stanza[i],
-                   "String2" = f_stanzas$Stanza[j], "Dist" = s_dist)
+      tb <- tibble("Doc" = v, "Index1" = i, "String1" = f_stanzas$Stanza[i],
+                   "Index2" = j, "String2" = f_stanzas$Stanza[j], "Dist" = s_dist)
       dist <- rbind(dist, tb)
     }
   }
@@ -555,51 +238,11 @@ dataset$m_l_dist <- mean_l_dist
 
 ```
 
-Now that Levenshtein distances between each songs' stanzas have been calculated, the mean of those scores for each song is then recorded and appended to our song dataframe. From there, let's see an intial plot of how these mean scores are distributed over time and separating charted and non-charted songs.
+What we might do now is attempt to set a threshold of the minimum number of edits (per stanza) that constitues a repeated structure. Then we could simply count the number of "repeated" stanzas per song and divide them by the total possible repeated stanzas per song. In this comparison, we are counting a noted similarity between 1 stanza and another as 1 observation and then dividing our final number of observations per song by the total possible stanza comparisons.
 
-```{r, echo = FALSE}
-# Scatterplot of data
-ggplot(dataset, aes(x=year_chart, y=m_l_dist, color=chart)) +
-  geom_point()
+Here is a brief example where we are dividing the total number of observation rows in the repeated dataframe by the total number of observation rows in the doc dataframe. "rep" holds our result:
 
-```
-
-As with most of our features, the mean Levenshtein distance for each song's lyrics (when measured against time) does not seem to create much separation between the charted and non-charted songs. In fact, if we chart the mean of these mean scores for each year, we see that charted and non-charted songs, again, follow a similar trajectory and with a corresponiding degree of change over time.
-
-```{r, echo = FALSE}
-
-# group data by year charted (or not)
-c_song_year <- dataset[1:1250,] %>% group_by(year_chart)
-nc_song_year <- dataset[1251:2500,] %>% group_by(year_chart)
-
-# Find most mean stanza distance for each year and plot
-mean_l_d <- c_song_year %>% summarise(
-  m_lyr_dist = mean(m_l_dist)
-)
-
-nc_mean_l_d <- nc_song_year %>% summarise(
-  nc_m_lyr_dist = mean(m_l_dist)
-)
-
-nc_mean_l_d$m_lyr_dist <- mean_l_d$m_lyr_dist
-
-library(reshape2)
-
-long_mean_l_d <- melt(nc_mean_l_d, id="year_chart")
-
-```
-
-```{r, echo = FALSE}
-# Run these lines together to compare both charts
-ggplot(data = long_mean_l_d,
-       aes(x = year_chart, y = value, colour = variable)) +
-  geom_line()
-
-```
-
-What we might do now is attempt to set a threshold of the minimum number of edits (per stanza) that constitues a repeated structure. Then we could simply count the number of "repeated" stanzas per song. To calculate this threshold value, we could take the mean distance score we calculated for each song and then subset our stanza distance data by all entries recording a distance 1 standard deviation from that mean. Setting a threshold at 1 standard deviation from the mean, when determining outliers of a dataset, is usually not good. Most professionals suggest that outliers are usually 3 standard deviations from a mean. However, because I am calculating mean and standard deviation of stanza distance similarity for each individual song, and because I already know repetition exists in most songs, standard deviations beyond one from the mean would not return any results (we would be asking for stanzas the score less than 0 in terms of string distance, which is impossible using the Levenshtein method). Therefore, setting the threshold at 1 standard deviation should allow us to standardize how we select repeated stanzas for each song.
-
-```{r, echo = FALSE}
+```{r}
 # group stanza distances by doc id and subset by mean and standard deviation
 grouped_dist <- final_dist %>% group_by(Doc)
 mean_sd <- grouped_dist %>% summarise(
@@ -621,61 +264,32 @@ rep <- vector()
 for(b in 1:2500){
   doc <- subset(grouped_dist, Doc == b)
   repeated <- subset(doc, Dist <= threshold[b])
-  rep[b] <- length(repeated$Dist)/dataset$stanzas[b]
+  rep[b] <- length(repeated$Dist)/length(doc$Doc)
 }
 
 dataset$rep <- rep
 
-```
+# Example to be printed below:
 
-Here's how the results look over time for the whole dataset. As you can see, we get a little more separation between charted and non-charted songs, but not a whole lot!
+doc <- subset(grouped_dist, Doc == 47)
+repeated <- subset(doc, Dist <= threshold[47])
+rep <- length(repeated$Dist)/length(doc$Doc)
 
-```{r, echo = FALSE}
-# Scatterplot of data
-ggplot(dataset, aes(x=year_chart, y=rep, color=chart)) +
-  geom_point()
-```
-
-Let's graph this change as mean values over time
-
-```{r, echo = FALSE}
-
-# group data by year charted (or not)
-c_song_year <- dataset[1:1250,] %>% group_by(year_chart)
-nc_song_year <- dataset[1251:2500,] %>% group_by(year_chart)
-
-# Find most mean stanza distance for each year and plot
-mean_rep <- c_song_year %>% summarise(
-  mean_rep = mean(rep)
-)
-
-nc_mean_rep <- nc_song_year %>% summarise(
-  nc_mean_rep = mean(rep)
-)
-
-nc_mean_rep$mean_rep <- mean_rep$mean_rep
-
-library(reshape2)
-
-long_mean_rep <- melt(nc_mean_rep, id="year_chart")
+repeated
+doc
+rep
 
 ```
 
-```{r, echo = FALSE}
-# Run these lines together to compare both charts
-ggplot(data = long_mean_rep,
-       aes(x = year_chart, y = value, colour = variable)) +
-  geom_line()
-
-```
+To calculate the threshold value for each song, we could take the mean distance score we calculated for each song and then subset our stanza distance data by all entries recording a distance 1 standard deviation from that mean. Setting a threshold at 1 standard deviation from the mean, when determining outliers of a dataset, is usually not good. Most professionals suggest that outliers are usually 3 standard deviations from a mean. However, because we are calculating mean and standard deviation of stanza distance similarity for each individual song, and because we already know repetition exists in most songs, standard deviations beyond one from the mean would not return many results (many of our true repeated stanzas would score lower than 0, which would be an innapropriate result for levenshtein distance). Moreover, the distribution of levenshtein scores per stanza per song is wide in the first place (because many songs have repeated choruses, which contribute to this spread). Therefore, setting the threshold at 1 standard deviation should allow us to standardize how we select repeated stanzas for each song.
 
 ## POS Tagging
 
-To recap, the research questions in this study so far broadly center around: 1. In what ways do country songs (charted and not-charted) change over time, and 2. Can we identify features that will help a machine learning model classify charted and not-charted songs accurately?
+To recap, the research questions in this study so far broadly center around: 1. In what ways do country songs (charted and uncharted) change over time, and 2. Can we identify features that will help a machine learning model classify charted and uncharted songs accurately?
 
-One area I have yet to explore is Parts-of-Speech tagging. Parts-of-Speech tagging involves tokenizing text and then identifying which parts of speech fit with each word. For this next exercise, I am mainly interested in identifying personal pronouns. Because country is a story-telling genre, I wonder how the use of different points of view (first, second, and third) has changed over time. One way to measure such a phenomenon is to find instances of each pronoun type in each song and to compute a ratio (1st person/total pronouns, 2nd person/total pronouns, etc.). From there, you can see which percentage wins for each song. One hypothesis I do have, that might help with the classifier I'm trying to tune, is that narrative person usage differs over time and between charted and not-charted songs. Let's find out!
+One area we have yet to explore is Parts-of-Speech tagging. Parts-of-Speech tagging involves tokenizing text and then identifying which parts of speech fit with each word. For this next exercise, we are mainly interested in identifying personal pronouns. Because country is a story-telling genre, we wonder how the use of different points of view (first, second, and third) has changed over time. One way to measure such a phenomenon is to find instances of each pronoun type in each song and to compute a ratio (1st person/total pronouns, 2nd person/total pronouns, etc.). From there, you can see which percentage "wins" for each song. One hypothesis we do have, that might help with the classifier we're trying to tune, is that narrative person usage differs over time and between charted and uncharted songs. Let's find out later!
 
-```{r, echo = FALSE}
+```{r}
 library(udpipe)
 
 # gets an english dictionary
@@ -730,12 +344,180 @@ dataset$rel <- factor(dataset$rel,
 
 ```
 
-```{r, echo = FALSE}
+## Finding Type-Token Ratio for Each Song
 
-# split datset into charted and not-charted
-ch_pron <- dataset[1:1250,]
-nc_pron <- dataset[1251:2500,]
+The final measure we want to calculate and compare between our charted and uncharted songs is Type-Token Ratio, a metric that involves calculating the total number of unique tokens in a chunk of text by the total number of words. At the moment, we do not have any hypotheses about how this measure will change over time, but we do imagine that charted songs will have a lower type-token ratio (making them more repetitive).
 
+```{r}
+
+# because the previous steps take a while to run, now that we've done the "heavy lifting," let's just write our dataset
+# to a csv file, clear our workspace, and reload our dataset into a new variable
+# write.csv(dataset, 'pos_songs.csv')
+
+dset <- read.csv('pos_songs.csv', stringsAsFactors = FALSE)[-(1:2)]
+
+library(dplyr)
+
+dset %>% group_by(chart) %>%
+  summarise(
+    mean_stanza = mean(stanzas)
+  )
+
+# reload some libraries
+library(dplyr)
+library(tidyverse)
+
+# add ttr to our new variable
+unique_len <- sapply(strsplit(dset$Lyrics, split= " "), unique) %>%
+  sapply(length)
+comment_sep <- sapply(strsplit(dset$Lyrics, split = " "), length)
+
+dset$ttr <- unique_len/comment_sep
+
+# encode some categorical variables
+dset$rel <- as.factor(dset$rel)
+dset$chart <- as.factor(dset$chart)
+
+```
+
+# Visualizing Some of Our Variables Over Time
+
+Now that we've transformed our character data into quantitative features, we can begin to chart some relationships between their manifestation in charted and uncharted songs and how they may change over time. We're choosing to begin examining some preliminary results with duration, and we would imagine that charted songs would typically be shorter than uncharted ones but that both sets would get a little longer (on average) over time.
+
+```{r}
+# loading libraries for reshaping and visualization
+library(reshape2)
+
+```
+
+Here's an example of the data plotted by duration of song and year charted (1 = charted, 0 = uncharted)
+
+```{r}
+# Scatterplot of data
+ggplot(dset, aes(x=year_chart, y=duration, color=chart)) +
+  geom_point() +
+  labs(
+    x = 'Year Charted',
+    y = 'Duration (s)',
+    title = "Scatterplot of Duration Over Time"
+  )
+
+```
+
+This is a pretty interesting scatter plot. Overall, charted songs seem to record slightly higher song durations than uncharted songs at different points in time, and uncharted songs seem to record duration observations that are consistently slightly lower than charted ones. So our hypothesis was wrong. Why might this be? Are uncharted songs just generally shorter than charted ones? Maybe. In fact, let's do some quick calculations and definitively answer that quesiton:
+
+```{r}
+# take the mean of charted songs' duration values
+c_nc_mean_song <- dset %>% group_by(chart) %>%
+  summarise(
+    mean_dur = mean(duration),
+    sd_dur = sd(duration)
+  )
+
+c_nc_mean_song
+
+```
+
+Examining this table, which shows the mean duration for charted and uncharted songs and their standard deviations, we don't see much difference between charted and uncharted songs. Generally, then, uncharted songs are not necessarily shorter, but they appear to be so when we plot them over time. One explanation for this behavior might be that charted songs pick up on and/or set a general trend that uncharted songs are always trying to "keep up" with. Perhaps songs that don't chart in a given year are just a little behind the curve for how long or short they need to be? Let's plot the relationship we've observed a little differently to perhaps give greater evidence to this phenomenon. The hypothesis could be that uncharted songs, in terms of duration will always be slightly behind or slightly ahead of the general progression that charted songs seem to be setting.
+
+What we'll plot then is the mean duration for each year (from charted and uncharted songs) and two linear models, one that explains the relationship between charted songs' duration and the time that goes by and the other explaining this relationship with uncharted songs. It's important to note that, while we are choosing to compare mean duration over time to linear regression models of uncharted and charted songs' relationships between these features, we are not doing so for predictive purposes, merely to see how charted and uncharted songs tend to behave over time. Moreover, these representations of the linear relationship between these features may not be the best representations, but we'll touch on that later.
+
+```{r}
+# group data by chart AND year charted
+c_nc_mean_year <- dset %>% group_by(chart, year_chart) %>%
+  summarise(
+    mean_dur = mean(duration)
+  )
+
+```
+
+```{r}
+
+# subset data for linear model
+dset_chart <- subset(dset, chart == 1)
+dset_un <- subset(dset, chart == 0)
+chart_year <- dset_chart$year_chart
+
+# Plot of mean duration over time for charted and uncharted songs
+ggplot() +
+  geom_line(aes(x = year_chart, y = mean_dur, colour = chart), data = c_nc_mean_year) +
+  geom_smooth(aes(x = year_chart, y = duration, col = chart), data = dset_chart, method = "lm") +
+  geom_smooth(aes(x = year_chart, y = duration, col = chart), data = dset_un, method = "lm") +
+  labs(
+    x = 'Year Charted',
+    y = 'Mean Duration (s)',
+    title = 'Mean Song Duration Over Time')
+
+```
+
+What we can see from this chart is that our hypothesis was generally correct. Plotting the linear relationships between duration and year for charted and uncharted songs, we see that uncharted songs are most often pretty far from charted songs' line. Moreover, in terms of their duration, uncharted songs vary a little more by year compared to charted ones. Their linear model also runs parallel to charted songs' line, which seems to suggest that uncharted songs, in general, are getting longer in a similar rate with charted ones (a phenomenon that is also apparent in the plot of the mean durations for each class by year); however, they are most often just a little behind the trend that charted songs seem to be following/setting.
+
+So what other changes do we notice over time? As with our hypothesis about duration, we would assume that songs, charted and uncharted, get more repetitive over time. We would also imagine that charted songs disply even greater amounts of repetition than uncharted ones.
+
+```{r}
+# Scatterplot of data
+ggplot(dset, aes(x=year_chart, y=rep, color=chart)) +
+  geom_point() +
+  labs(
+    x = "Year Charted",
+    y = "Percentage of Repeated Stanzas",
+    title = "Scatterplot of Repeated Stanzas Over Time"
+  )
+
+```
+
+When we examine the scatter plot above, what we can generally see is that, in general, charted songs seem to exhibit a greater proportion of repeated stanzas (over total possible repetitions) compared with uncharted songs. However, we cannot, at this point, get a good sense of the general progression of this relationship over time, so let's, once again, calculate some means, standard deviations, and make another plot.
+
+```{r}
+# first, let's get a sense of the average amount of repetition for charted and uncharted songs
+c_nc_rep_mean <- dset %>% group_by(chart) %>%
+  summarise(
+    mean_rep = mean(rep),
+    sd_rep = sd(rep)
+  )
+
+c_nc_rep_mean
+
+```
+
+Much like the duration information we have, there is little difference between charted and uncharted songs just accounting for the amount of repetition they exhibit.
+
+However, again, as with duration, time seems to play a role in helping us see patterns between charted and uncharted songs' repetition. So let's again plot each year's mean repetition score (for charted and uncharted songs) and then add a linear model that explains the relationship between charted songs' year charted and their repetition score and one that explains that relationship for uncharted songs. Again, the hypothesis would be that uncharted songs do not adjust well to the trend that charted songs may or may not be following or setting, or that they may be setting/following a different trend entirely.
+
+```{r}
+# group data by chart and year
+c_nc_year_rep <- dset %>% group_by(chart, year_chart) %>%
+  summarise(
+    mean_rep = mean(rep),
+    sd_rep = sd(rep)
+  )
+
+# Run these lines together to compare both charts
+ggplot() +
+  geom_line(aes(x = year_chart, y = mean_rep, colour = chart), data = c_nc_year_rep) +
+  geom_smooth(aes(x = year_chart, y = rep, col = chart), data = dset_chart, method = "lm") +
+  geom_smooth(aes(x = year_chart, y = rep, col = chart), data = dset_un, method = "lm") +
+  labs(
+    x = "Year Charted",
+    y = "Mean Repetition Percentages",
+    title = "Mean Repetition Per Year"
+  )
+
+```
+
+As we can see, uncharted songs do even worse than they did in terms of following a general trend in terms of duration over time that charted songs perhaps were following and/or setting. In some cases, it looks as though uncharted songs increase and decrease mean repetition with charted songs, but they often increase or decrease when charted songs increase or decrease, for example, at a far greater magnitude. Also, charted songs, in general, started out more repetitive and have gradually been getting less so over time, whereas unchrated ones, it seems have been generally getting slightly more repetitive from when we started tracking.
+
+One other feature we quantified and wanted to observe over time was pronoun usage. Again, we essentially performed type token ratio, except with pronouns. We counted the total pronoun type (1st, 2nd, and 3rd) and divided each one by the total number of pronouns used in each song. The "winning" ratio defined whether or not a song used more 1st, 2nd, or 3rd person pronouns as storytelling features.
+
+So, how did (or did) pronoun usage change over time?
+
+```{r}
+
+# split datset into charted and uncharted
+ch_pron <- dset[1:1250,]
+nc_pron <- dset[1251:2500,]
+
+# group data by year charted and count and sort each relative pronoun winner per song
 year_rel_c <- ch_pron %>%
   group_by(year_chart) %>%
   count(rel, sort = TRUE) %>%
@@ -752,70 +534,1230 @@ ggplot(data = year_rel_c) +
     mapping = aes(year_chart, n, color = rel),
     show.legend = FALSE
   ) +
-  geom_point(aes(year_chart, n, colour = rel))
+  geom_point(aes(year_chart, n, colour = rel)) +
+  labs(
+    x = "Year Charted",
+    y = "Number of Songs Per Pronoun",
+    title = "Proportion of Pronoun Type Usage Over Time (Charted)"
+  )
 
 ggplot(data = year_rel_nc) +
   geom_smooth(
     mapping = aes(year_chart, n, color = rel),
     show.legend = FALSE
   ) +
-  geom_point(aes(year_chart, n, colour = rel))
+  geom_point(aes(year_chart, n, colour = rel)) +
+  labs(
+    x = "Year Charted",
+    y = "Number of Songs Per Pronoun",
+    title = "Proportion of Pronoun Type Usage Over Time (Uncharted)"
+  )
 
 ```
 
-As with other features we've identified, at this point, what we've done with POS tagging and personal pronoun usage has shown that - for charted and not-charted songs across the 50 year period - both sets make use of third person pronouns far more often than they do the other ones. The general trend does not seem to change much with time either, as can be seen in the smoothed lines that show fairly flat lines.
+Unfortunatley, what these visualizations show is that pronoun usage per year typically favors the 3rd person pronoun. Moreover, the use of 3rd person pronouns in charted vs uncharted songs is not very different, and time doesn't seem to play a role in determining pronoun usage.
 
-## Sentiment and Decades
+## Results from Charting Some Variables Over Time
 
-The last exercise I want to try is to see, for each decade, what are the top contributing sentiments (based on the NRC sentiment dictionary)? At this point, I actually hypothesize that there will be little to no change between the decades and that, again, no great difference will emerge between charted and not-charted songs.
+What we can see from the exercises above is that the individual features alone (duration, repetition, and pronoun usage) do not help us say anything interesting about any difference between charted and uncharted songs. However, how many of those features manifest over time does prove interesting. Fortunately for us, we also have a good number of features we can explore beyond just seeing how they change over time, and we can make hypotheses about these other features that might inform what kinds of observations we can make about charted and uncharted country songs over the period we've chosen to analyze.
 
-```{r, echo = FALSE}
+## Exploring other intial hypotheses
 
-# split dataset into charted and not charted
-ch <- dataset[1:1250,]
-nch <- dataset[1251:2500,]
+So, one thing we can do is try to determine what other relationships might prove helpful in understanding the relationship between charted and uncharted songs - and their subsequent relationship to the features we select.
 
-# get tidy lyrics
-tidy_lyrics <- ch %>%
-  unnest_tokens(word, Lyrics)
+For instance, we would imagine that repetition and duration may exhibit interesting behaviors when compared against one another. As a song gets longer, we would expect it to be more repetitive, due to an artist cycling more often through choruses. We would also imagine that charted songs may exhibit such a phenomenon moreso than uncharted ones. Let's generate a quick scatterplot to see how the datapoints fall:
 
-nc_tidy_lyrics <- nch %>%
-  unnest_tokens(word, Lyrics)
+```{r}
+# Scatterplot of data
+ggplot(dset, aes(x=duration, y=rep, color=chart)) +
+  geom_point() +
+  labs(
+    x = "Duration (s)",
+    y = "Percentage of Repeated Stanzas",
+    title = "Scatterplot of Repeated Stanzas Against Song Duration"
+  )
 
-# get word count
-decade_word <- tidy_lyrics %>% count(decade)
-nc_decade_word <- nc_tidy_lyrics %>% count(decade)
-
-# get sentiment
-lyric_sent <- tidy_lyrics %>%
-  inner_join(get_sentiments("nrc"), by = "word")
-
-nc_lyric_sent <- nc_tidy_lyrics %>%
-  inner_join(get_sentiments("nrc"), by = "word")
-
-# plot
-lyric_sent %>% 
-  group_by(decade) %>%
-  count(word,sentiment,sort=TRUE) %>%
-  ggplot(aes(x = sentiment, y = n, fill = factor(sentiment))) + 
-  geom_col(show.legend = FALSE) +
-  facet_wrap(~ decade, scales="free") +
-  coord_flip() +
-  labs(x = NULL, y = NULL,
-     title = "NRC Sentiment Distribution by Decade (charted)",
-     subtitle = "How do prevailing emotion categories change over time?")
-
-nc_lyric_sent %>% 
-  group_by(decade) %>%
-  count(word,sentiment,sort=TRUE) %>%
-  ggplot(aes(x = sentiment, y = n, fill = factor(sentiment))) + 
-  geom_col(show.legend = FALSE) +
-  facet_wrap(~ decade, scales="free") +
-  coord_flip() +
-  labs(x = NULL, y = NULL,
-     title = "NRC Sentiment Distribution by Decade (not charted)",
-     subtitle = "How do prevailing emotion categories change over time?")
 ```
 
-What I've done here is separate charted and not-charted songs again and plotted the frequency of words from each decade that were classified as NRC emotion words. As you can see, my hypothesis was correct.
+Now this graph is interesting. We get a decent amount of separation between charted and uncharted songs. Overall, charted songs seem to have a larger proportion of repeated stanzas, and, as a charted song gets longer, it gets less repetitive, while, as an uncharted song gets longer, it gets more repetitive. So, perhaps duration and repetition can help us determine whether or not a song charts.
+
+Another relationship that might prove interesting is type token ratio and number of stanzas per song. Our hypothesis might be that songs with more stanzas would have a lower type token ratio (more repetitive). We would also predict that charted songs would exhibit this trend moreso than uncharted ones.
+
+Here is a quick scatterplot of this relationship:
+
+```{r}
+# Scatterplot of data
+ggplot() +
+  geom_point(aes(x=stanzas, y=ttr, color=chart), data = dset) +
+  labs(
+    x = "Number of Stanzas",
+    y = "Type Token Ratio",
+    title = "Scatterplot of Type Token Ratio Against Number of Stanzas"
+  )
+
+```
+
+From this plot, it would appear that, in general, our hypothesis about the relationship between charted and uncharted songs' type token ratio compared to their number of stanzas was correct. It's also interesting to see how much separation we get between charted and uncharted songs with these features.
+
+From this plot, it would seem that charted songs, in general have a higher number of stanzas than uncharted ones, and as number of stanzas increases, the type token ratio decreases, which might indicate that songs with more lyrical units are more repetitive. This also fits with our previous observation that charted songs exhibit a slightly greater amount of lyrical and structural repetition than uncharted ones, which seems to also manifest itself in terms of these songs' type token ratios.
+
+# Picking a Classification Model and a Set of Features
+
+Okay, so the results we've come to so far are fairly interesting and help us explain a lot about charting and uncharting country songs between 1960 and 2010. However, wouldn't it be nice if we could make more definitive statements about what lyrical, structural, and metadata features help to separate charting country songs from non-charting ones? Well, using some machine learning techniques, we can actually try to make some statements of this nature.
+
+The general method we'll be employing is classification. Classification models attempt to use a set of features about a data set to make predictions about a particular data point, based upon the observations it records for those features. For our first model, our "classes" include charting and not charting (true and false). Our features are listed below:
+
+1. Duration
+2. Number of Stanzas
+3. Year Charted
+4. Proportion of Repeated Stanzas to Total Possible Repetitions
+5. Relatively Highest Pronoun Used
+6. Type-Token Ratio
+
+We have the opportunity to use more metadata features that we've collected (such as if a song came from an ablum or as part of a single and its track position), but our questions really pertain to structural and lyrical elements our songs and whether or not, taken together, those feautres can be combined to help a classifier determine accurately whether or not a song is from the charted list. Although "Year Charted" is not necessarily a structural or lyrical element, we keep it in our mix of features because, as noted earlier, many of our features appear in fairly even amounts across our dataset, but they tend to manifest in varying amounts when measured over time.
+
+The next step in our project is to determine what machine learning model (linear or non-linear) best fits our dataset and to determine what features might be most helpful for getting a model to make accurate predictions about whether a country song charts or not.
+
+What we need to do now is encode some of our categorical variables and then compare some linear and non-linear models to guage their performace. A linear model attempts to draw a line between data points based upon the features fed to the model in order to try to separate one class (charted) from another (uncharted). A non-linear model draws non-linear prediction boundaries. Because we are training our models with multiple features, we cannot accurately plot these boundaries, but we will provide two brief examples below, one of a linear model and another of a non-linear one.
+
+```{r}
+
+# encoding categorical variables
+#dset$rel <- as.factor(dset$rel)
+#dset$album_single <- as.factor(dset$album_single)
+dset$chart <- as.factor(dset$chart)
+#dset$track_number <- as.factor(dset$track_number)
+#dset$year_chart <- as.factor(dset$year_chart)
+
+```
+
+## Example Plot of a Linear Model (Support Vector Machines) and a Non-Linear One (K-SVM)
+
+```{r}
+# selecting independent and dependent features for our model
+svm_data <- dset[,c(8, 16, 11)]
+
+# Splitting the dataset into the Training set and Test set
+# install.packages('caTools')
+library(caTools)
+set.seed(123)
+split = sample.split(svm_data$chart, SplitRatio = 0.75)
+training_set = subset(svm_data, split == TRUE)
+test_set = subset(svm_data, split == FALSE)
+
+# Feature Scaling
+training_set[,c(-3)] = scale(training_set[,c(-3)])
+test_set[,c(-3)] = scale(test_set[,c(-3)])
+
+# Fitting SVM classifier to the Training set and predicting the Test Set Results
+set.seed(123)
+library(e1071)
+s_classifier = svm(formula = chart ~.,
+                 data = training_set,
+                 type = 'C-classification',
+                 kernel = 'linear')
+
+ks_classifier = svm(formula = chart ~.,
+                  data = training_set,
+                  type = 'C-classification',
+                  kernel = 'radial')
+
+#Making prediction on test_set
+s_y_pred <- predict(s_classifier, newdata = test_set[-3])
+ks_y_pred <- predict(ks_classifier, newdata = test_set[-3])
+
+# Making the Confusion Matrix
+s_cm = table(test_set[, 3], s_y_pred)
+s_cm
+
+ks_cm = table(test_set[, 3], ks_y_pred)
+ks_cm
+
+# Visualising the Linear Test set results
+library(ElemStatLearn)
+set = test_set
+X1 = seq(min(set[, 1]) - 1, max(set[, 1]) + 1, by = 0.01)
+X2 = seq(min(set[, 2]) - 1, max(set[, 2]) + 1, by = 0.01)
+grid_set = expand.grid(X1, X2)
+colnames(grid_set) = c('duration', 'rep')
+y_grid = predict(s_classifier, newdata = grid_set)
+plot(set[, -3], main = 'SVM (Test set)',
+     xlab = 'Duration (s)', ylab = 'Repeated Stanzas',
+     xlim = range(X1), ylim = range(X2))
+contour(X1, X2, matrix(as.numeric(y_grid), length(X1), length(X2)), add = TRUE)
+points(grid_set, pch = '.', col = ifelse(y_grid == 1, 'springgreen3', 'tomato'))
+points(set, pch = 21, bg = ifelse(set[, 3] == 1, 'green4', 'red3'))
+
+# Visualising the Non-Lnear Test Set Results
+library(ElemStatLearn)
+set = test_set
+X1 = seq(min(set[, 1]) - 1, max(set[, 1]) + 1, by = 0.01)
+X2 = seq(min(set[, 2]) - 1, max(set[, 2]) + 1, by = 0.01)
+grid_set = expand.grid(X1, X2)
+colnames(grid_set) = c('duration', 'rep')
+y_grid = predict(ks_classifier, newdata = grid_set)
+plot(set[, -3], main = 'K-SVM (Test set)',
+     xlab = 'Duration (s)', ylab = 'Repeated Stanzas',
+     xlim = range(X1), ylim = range(X2))
+contour(X1, X2, matrix(as.numeric(y_grid), length(X1), length(X2)), add = TRUE)
+points(grid_set, pch = '.', col = ifelse(y_grid == 1, 'springgreen3', 'tomato'))
+points(set, pch = 21, bg = ifelse(set[, 3] == 1, 'green4', 'red3'))
+
+```
+
+So, in these example classification plots, which only consider two features and don't do very well (both classifiers' accuracies on this run are around 50%), we can see how a each classifier attempts to separate data. In each graph, charted songs are represented by green dots, and uncharted by red. The SVM model, which is a linear classifier, attempts to draw a proverbial line in the sand and say charted songs more often exhibit these combinations of duration and repetition, and vice versa for uncharted ones, while the K-SVM model, which is a non-linear classifier, attempts to draw non-linear prediction boundaries to predict results of a held-out test group that we've reserved basesd upon how it learns to classify uncharted and charted songs from a training set.
+
+Now that we understand a little bit about how linear and non-linear models attempt to classify data in terms of the relationships between supplied features, let's compare a bunch of different models and validate them all to see which model performs best.
+
+We'll compare 2 linear models (logistic regression and Support Vector Machines) to 4 non-linear models (Support Vector Machines with a Radial Kernel, Naive Bayes, K Nearest Neighbors, and Random Forest Decision Trees). Each of these models has its own "intuition," or general theory behind how it classifies data based upon the feature information it has about each data point (song).
+
+Here's a brief summary of each:
+
+1. Logistic Regression: Based on a set of independent variables (feautures such as song duration and repetition), obtain a set of probablistic predictions as to whether a song will be charted or not.
+2. Support Vector Machines: If we have apples and oranges, we're going to pick the least "appley" apple and least "orangey" orange and draw a line that is equidistant from these two data points (called the maximum margin hyperplane). This is a powerful model because most other classifiers attempt to classify datapoints based on their similarity to other ones around them.
+3. Support Vector Machines with a Radial Kernel: This is a version of SVM that imposes a radial function on our songs (as represented by the features we've selected) that tricks our graph space into thinking that the points exist on a higher dimension. In simple terms, we manipulate our data with the radial function in a faux 3-D space and then return them to a 2-D space with curved boundaries.
+4. Naive Bayes: This is a powerful and fast classifier that uses probability to determine whether or not a new data point will fall into one class or another given the particular features it has.
+5. K-Nearest Neighbors: We set a number of close (measured sometimes in Euclidean Distance) K neighbors to identify around a new datapoint. If the datapoint is nearer to more of one class than the other, it belongs in that class.
+6. Random Forest Decision Trees: A powerful adaptation to a standard Decision Trees classifier. It is an ensemble learning method that begins by picking at random K data points from a training set. Then, it builds a decision tree based upon the features we've given it to help it learn how to classify these K points. Then we choose a number of decision trees we want to build and repeat. Finally, to use this model to predict a held-out test set, we make each of our trees predict the category a new data point belongs to and then pick the category that receives the majority vote.
+
+Now that we have a general idea of how each model works, let's also briefly discuss how we'll be validating and comparing each model's success.
+
+One method for determining the success of a model (or calculating a cross-validation accuracy score) is to, like we did above, split our data into a training and test set and then train our model on our training set and use that model to predict the dependent variables (chart or not chart) of our test set. Then, we divide the correct predictions over the total observations.
+
+Because machine learning models can give differing results every time they are run, we could run a given model thousands of times and average our accuracy scores in order to get a good idea of how its performing, whether or not any given result occurs by chance or if our results vary too much and suggest that our model may not be performing well.
+
+What we'll do instead is a validation scheme that sort of blends this approach with anothet, K-Fold Cross Validation. We'll perform K-Cross fold validation, setting a K of 5 folds for our data set. During this process, we break our total data set into 5 random folds. As an example of how we would receive accuracy scores, let's say we set a K of 3. In this scenario, we would split our data into 3 relatively equal folds (depending on if our data's length is divisible by 3). Then, we would train a model on folds 1 and 2 and cross validate our model's performance on a prediction of fold 3's classes (charted vs uncharted). We would repeat this process training on folds 1 and 3 and predicting against fold 2, until we've run through all possibilities. This is what we're doing with our 5 fold split. Moreover, much like the first validation approach we mentioned, we are going to perform our 5-fold cross validation 100 times for each model that we are comparing. While this will be computationally expensive, it will give us a good idea of which classification models are most predictive given the features we've selected and the classes we want to sort our data into.
+
+So, let's go ahead and run our 5-fold validation and plot our mean accuracy from each fold for each model.
+
+```{r}
+# get only relevant features
+data <- dset[, c(8, 12, 13, 16, 17, 19, 11)]
+# shuffle data
+set.seed(123)
+data <- data[sample(1:nrow(data)),]
+
+
+# Splitting the dataset into the Training set and Test set
+# install.packages('caTools')
+library(caTools)
+set.seed(123)
+split = sample.split(data$chart, SplitRatio = 0.75)
+training_set = subset(data, split == TRUE)
+test_set = subset(data, split == FALSE)
+
+
+# Feature Scaling
+data[,c(1, 2, 4, 6)] <- scale(data[,c(1, 2, 4, 6)])
+training_set[,c(1, 2, 4, 6)] <- scale(training_set[,c(1, 2, 4, 6)])
+test_set[,c(1, 2, 4, 6)] <- scale(test_set[,c(1, 2, 4, 6)])
+
+# before testing knn, let's find optimal number of clusters
+set.seed(400)
+library(caret)
+ctrl <- trainControl(method = "repeatedcv", repeats = 3)
+knnFit <- train(chart ~ ., data = training_set, method = "knn", trControl = ctrl,
+                preProcess = c("center", "scale"), tuneLength = 20)
+
+knnFit
+#knnFit method lets us know that 5 k will prove most accurate
+library(class)
+accuracy_table <- tibble()
+for(i in 1:100){
+  # Applying K-Fold
+  library(caret)
+  folds = createFolds(data$chart, k = 35)
+  library(e1071)
+  lsvm_cv = lapply(folds, function(x){
+    training_fold = data[-x, ]
+    test_fold = data[x, ]
+    
+    #build svm classifier
+    l_svm_classifier = svm(formula = chart ~.,
+                   data = training_fold,
+                   type = 'C-classification',
+                   kernel = 'linear')
+    lsvm_y_pred <- predict(l_svm_classifier, newdata = test_fold[-7])
+    cm <- table(test_fold[, 7], lsvm_y_pred)
+    lsvm_accuracy <- (cm[1,1] + cm[2,2])/(cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+    return(lsvm_accuracy)
+  })
+  
+  log_reg <- lapply(folds, function(x){
+    training_fold <- data[-x, ]
+    test_fold <- data[x, ]
+    
+    # build log_reg classifier
+    log_class <- glm(formula = chart ~ .,
+                     family = binomial,
+                     data = training_fold)
+    
+    prob_pred <- predict(log_class, type = "response", newdata = test_fold[-7])
+    y_pred <- ifelse(prob_pred > 0.5, 1, 0)
+    cm <- table(test_fold[, 7], y_pred)
+    log_accuracy <- (cm[1,1] + cm[2,2])/(cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+    return(log_accuracy)
+  })
+  
+  svm_cv = lapply(folds, function(x){
+    training_fold = data[-x, ]
+    test_fold = data[x, ]
+    
+    # build radial k-svm classifier and prediction
+    svm_classifier = svm(formula = chart ~.,
+                   data = training_fold,
+                   type = 'C-classification',
+                   kernel = 'radial')
+    svm_y_pred = predict(svm_classifier, newdata = test_fold[-7])
+    cm = table(test_fold[, 7], svm_y_pred)
+    svm_accuracy = (cm[1,1] + cm[2,2])/(cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+    
+    return(svm_accuracy)
+  })
+  
+  knn_cv <- lapply(folds, function(x){
+    training_fold <- data[-x, ]
+    test_fold <- data[x, ]
+  
+    # Fitting K-NN classifier to the Training set and predicting the Test Set Results
+    y_pred <- knn(train = training_fold[-7],
+                  test = test_fold[-7],
+                  cl = training_fold[, 7],
+                  k = 5)
+    
+    cm <- table(test_fold[, 7], y_pred)
+    knn_accuracy = (cm[1,1] + cm[2,2])/(cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+    return(knn_accuracy)
+  })
+  
+  nb_cv <- lapply(folds, function(x){
+    training_fold <- data[-x, ]
+    test_fold <- data[x, ]  
+    library(e1071)
+    classifier <- naiveBayes(x = training_fold[, -7],
+                             y = training_fold$chart)
+    y_pred <- predict(classifier, newdata = test_fold[-7])
+    cm <- table(test_fold[, 7], y_pred)
+    accuracy = (cm[1,1] + cm[2,2])/(cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+    return(accuracy)
+  })
+  
+  rf_cv <- lapply(folds, function(x){
+    training_fold <- data[-x, ]
+    test_fold <- data[x, ]
+    
+    library(randomForest)
+    classifier = randomForest(x = training_fold[-7],
+                              y = training_fold$chart,
+                              ntree = 200)
+    
+    y_pred <- predict(classifier, newdata = test_fold[-7])
+    cm <- table(test_fold[, 7], y_pred)
+    accuracy <- (cm[1,1] + cm[2,2])/(cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+    return(accuracy)
+  })
+  
+  for(i in 1:5){
+    lsvm_tb <- tibble('fold' = i, 'method' = 'svm_fold', "accuracy" = lsvm_cv[[i]])
+    accuracy_table <- rbind(accuracy_table, lsvm_tb)
+    log_reg_tb <- tibble('fold' = i, 'method' = 'log_fold', 'accuracy' = log_reg[[i]])
+    accuracy_table <- rbind(accuracy_table, log_reg_tb)
+    svm_tb <- tibble('fold' = i, 'method' = 'ksvm_fold', "accuracy" = svm_cv[[i]])
+    accuracy_table <- rbind(accuracy_table, svm_tb)
+    knn_tb <- tibble('fold' = i, 'method' = 'knn_fold', 'accuracy' = knn_cv[[i]])
+    accuracy_table <- rbind(accuracy_table, knn_tb)
+    nb_tb <- tibble('fold' = i, 'method' = 'nb_fold', 'accuracy' = nb_cv[[i]])
+    accuracy_table <- rbind(accuracy_table, nb_tb)
+    rf_tb <- tibble('fold' = i, 'method' = 'rf_fold', 'accuracy' = rf_cv[[i]])
+    accuracy_table <- rbind(accuracy_table, rf_tb)
+  }
+}
+
+accuracy_table$fold <- as.factor(accuracy_table$fold)
+
+t <- accuracy_table %>% group_by(method, fold) %>%
+  summarise(
+    mean_accuracy = mean(accuracy)
+  )
+
+a <- accuracy_table %>% group_by(method) %>%
+  summarise(
+    mean_accuracy = mean(accuracy),
+    min_acc = min(accuracy),
+    max_acc = max(accuracy),
+    sd_acc = sd(accuracy)
+  )
+
+a
+
+ggplot(data = t, aes(x = fold, y = mean_accuracy, colour = method, group = method)) +
+  geom_point() + geom_line() +
+  labs(
+    x = "Fold",
+    y = "Mean Accuracy (from 100 x)",
+    title = "Mean Accuracy from 100 x 5-fold Cross Validation",
+    subtitle = "K Nearest Neighbor, Naive-Bayes, Random Forest DT, K-SVM"
+  )
+
+```
+
+Our results are in, and, while our K-SVM model performs better than most of our models, it does not record a sufficient degree of accuracy in terms of predicting whether or not a song, based on the features we provided our model, charts. The mean accuracy score for this model over 100 iterations of 5-fold cross validation is just 58%.
+
+So, we are left with a few questions. The first is: Is our model bad? Yes and no. It is bad at predicting whether or not a song charts; however, our model's lack of success makes sense and explains a lot of the relationships we observed in our inital stage of exploration. Charted and uncharted songs in our set do differ between the features we've identified, but only slightly. Moreover, as shown earlier, time seems to play only a role in distinguishing between how the features we've identified manifest in charted and uncharted songs.
+
+The next question is: Should we retry our models with different combinations of the features we've selected or even add more features? Based on our models' performances and the work we did earlier in this document, we do not think such a procedure would help our classification models significantly. Also, many of the other features we could add to our model do in fact help, driving up mean accuracy of a K-SVM classifier to 71% (see below)! However, we aren't really interested in whether or not a song coming from an album or single release determines whether or not it charts. We're more interested in the lyrical and structural elements at play. Part of the reason that lyrical and structural elements (and different combinations of them) do not and would not help our classfier stems from the fact that we made a methodological choice to build our experiment (charted) and control group (uncharted) using song and album information for those that charted to select songs for our control group based on songs that were released with charting songs that did not happen to chart in the same year. Essentially then, we're comparing a charting Taylor Swift song with one that did not chart in the same year for whatever reason. Lyrically and structurally, we would imagine that these two songs would not be that different from one another.
+
+```{r}
+# get only relevant features
+data <- dset[, c(8, 10, 12, 13, 16, 17, 19, 11)]
+# shuffle data
+set.seed(123)
+data <- data[sample(1:nrow(data)),]
+
+# feature scaling
+data[, c(1, 3, 5, 7)] <- scale(data[,c(1, 3, 5, 7)])
+
+# Applying K-Fold
+ksvm_acc_chart <- tibble()
+for(i in 1:100){
+  library(caret)
+  folds = createFolds(data$chart, k = 5)
+  
+  library(e1071)
+  
+  cv = lapply(folds, function(x){
+    training_fold = data[-x, ]
+    test_fold = data[x, ]
+    classifier = svm(formula = chart ~.,
+                   data = training_fold,
+                   type = 'C-classification',
+                   kernel = 'radial')
+    y_pred = predict(classifier, newdata = test_fold[-8])
+    cm = table(test_fold[, 8], y_pred)
+    accuracy = (cm[1,1] + cm[2,2])/(cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+    return(accuracy)
+  })
+  
+  for(i in 1:5){
+    ksvm_chart <- tibble('fold' = i, 'method' = 'svm_fold', "accuracy" = cv[[i]])
+    ksvm_acc_chart <- rbind(ksvm_acc_chart, ksvm_chart)
+  }
+}
+
+# group by fold and get mean
+ksvm_acc_c <- ksvm_acc_chart %>% group_by(fold) %>%
+  summarise(
+    mean_acc = mean(accuracy),
+    min_acc = min(accuracy),
+    max_acc = max(accuracy),
+    sd_acc = sd(accuracy)
+  )
+
+ksvm_acc_c
+
+ggplot(data = ksvm_acc_c, aes(x = fold, y = mean_acc)) +
+  geom_point() + geom_line() +
+  labs(
+    x = "Fold",
+    y = "Mean Accuracy (from 100 x)",
+    title = "Mean Accuracy from 100 x 5-fold Cross Validation",
+    subtitle = "K-SVM (all features + album/single)"
+  )
+
+ksvm_acc_c_mean <- mean(ksvm_acc_chart$accuracy)
+ksvm_acc_c_mean
+
+```
+
+We could potentially generate a feature set of word features and see whether or not the words that songs use help a machine model classify them into charted or uncharted, but, again, because of the way we built our control and experiment group, we would imagine that such an approach would prove unhelpful, as similar artists would use similar words regardless of whether or not a song charts. In fact, we measured this at one point, and the classifier performed even worse (see below). So rather than continue down the unproductive road of classification, let's instead explore topic modeling.
+
+```{r}
+library(tidytext)
+library(dplyr)
+library(tm)
+library(SnowballC)
+
+# Creating the document-term matrix for train data
+doc.vec_train <- VectorSource(dset$Lyrics)
+doc.corpus_train <- Corpus(doc.vec_train)
+doc.corpus_train <- tm_map(doc.corpus_train , tolower)
+doc.corpus_train <- tm_map(doc.corpus_train, removePunctuation)
+doc.corpus_train <- tm_map(doc.corpus_train, removeNumbers)
+doc.corpus_train <- tm_map(doc.corpus_train, removeWords, stopwords("english"))
+doc.corpus_train <- tm_map(doc.corpus_train, stripWhitespace)
+
+TDM_all <- TermDocumentMatrix(doc.corpus_train)
+DTM_all <- DocumentTermMatrix(doc.corpus_train)
+DTM_all <- removeSparseTerms(DTM_all, .999)
+
+# convert train data to df
+df_dtm <- as.data.frame(as.matrix(DTM_all))
+
+# add dependent variable
+df_dtm$Chart <- dset$chart
+
+# Applying K-Fold
+w_ksvm_acc <- tibble()
+for(i in 1:100){
+  library(caret)
+  folds <- createFolds(df_dtm$Chart, k = 5)
+  
+  library(e1071)
+  
+  # just word features and chart or not chart
+  word_ksvm_cv = lapply(folds, function(x){
+    training_fold = df_dtm[-x, ]
+    test_fold = df_dtm[x, ]
+    classifier = svm(formula = Chart ~.,
+                   data = training_fold,
+                   type = 'C-classification',
+                   kernel = 'radial',
+                   scale = FALSE)
+    y_pred = predict(classifier, newdata = test_fold[-4305])
+    cm = table(test_fold[, 4305], y_pred)
+    accuracy = (cm[1,1] + cm[2,2])/(cm[1,1] + cm[2,2] + cm[1,2] + cm[2,1])
+    return(accuracy)
+  })  
+  for(i in 1:5){
+    w_ksvm_tb <- tibble('fold' = i, 'method' = 'ksvm_fold', 'accuracy' = word_ksvm_cv[[i]])
+    w_ksvm_acc <- rbind(w_ksvm_acc, w_ksvm_tb)
+  }
+}
+
+# group by fold and get mean
+w_ksvm_acc_c <- w_ksvm_acc %>% group_by(fold) %>%
+  summarise(
+    mean_acc = mean(accuracy),
+    min_acc = min(accuracy),
+    max_acc = max(accuracy),
+    sd_acc = sd(accuracy)
+  )
+
+ggplot(data = w_ksvm_acc_c, aes(x = fold, y = mean_acc)) +
+  geom_point() + geom_line() +
+  labs(
+    x = "Fold",
+    y = "Mean Accuracy (from 100 x)",
+    title = "Mean Accuracy from 100 x 5-fold Cross Validation",
+    subtitle = "K-SVM (Using 4304 Word Features)"
+  )
+
+w_ksvm_acc_c
+mean_w_all_ksvm <- mean(w_ksvm_acc$accuracy)
+mean_w_all_ksvm
+
+```
+
+# What Can Topic Modelling Show Us?
+
+In the words of literary scholar and digital humanist Paul Barrett, Topic Modeling is:
+
+"...a form of unsupervised machine learning. It is a kind of text mining that doesn't search for particular, predetermined content, but instead 'reads' an entire corpus and extracts a set of topics. Its unclear, and a point of debate, whether the topics are read / discovered from the corpus or whether the topics are 'asserted' as a description of the corpus."
+
+One hypothesis we have at this stage is that perhaps charted and uncharted songs may distinguish themselves based upon the amount of topics a model suggests exist and the types of words and themes that one can interpret from top topics.
+
+To get started, we need to reshape some of the data and determine the number of clusters our model should make.
+
+```{r}
+# STM topic model performance evaluation
+library(tidytext)
+library(dplyr)
+
+# split data into charted and uncharted
+charted <- subset(dset, chart == 1)
+charted$ID <- c(1:1250)
+uncharted <- subset(dset, chart == 0)
+uncharted$ID <- c(1:1250)
+
+# get word frequency counts for charted songs
+tidy_song_chart <- charted %>%
+  unnest_tokens(word, Lyrics) %>%
+  anti_join(get_stopwords()) %>%
+  add_count(word) %>%
+  filter(n > 100) %>%
+  select(-n)
+
+# get word frequency counts for uncharted songs
+tidy_song_unchart <- uncharted %>%
+  unnest_tokens(word, Lyrics) %>%
+  anti_join(get_stopwords()) %>%
+  add_count(word) %>%
+  filter(n > 100) %>%
+  select(-n)
+
+# generate sparse document term matrices
+songs_sparse <- tidy_song_chart %>%
+  count(ID, word) %>%
+  cast_sparse(ID, word, n)
+
+un_songs_sparse <- tidy_song_unchart %>%
+  count(ID, word) %>%
+  cast_sparse(ID, word, n)
+
+library(stm)
+library(furrr)
+
+# run our structural topic models with a bunch of different topics for evaluation later
+
+set.seed(1234)
+many_models <- tibble(K = c(10, 20, 40, 50, 60, 70, 80, 100, 120, 150)) %>%
+  mutate(topic_model = future_map(K,
+                                  ~stm(songs_sparse, K = .,
+                                       verbose = FALSE)))
+
+set.seed(1234)
+un_many_models <- tibble(K = c(10, 20, 40, 50, 60, 70, 80, 100, 120, 150)) %>%
+  mutate(topic_model = future_map(K,
+                                  ~stm(un_songs_sparse, K = .,
+                                       verbose = FALSE)))
+
+# create heldout test sets for evaluation and model performance diagnostics
+heldout <- make.heldout(songs_sparse)
+un_heldout <- make.heldout(un_songs_sparse)
+
+```
+
+Now we need to determine the number of topic models to make for charted and uncharted songs.
+
+```{r}
+
+k_result <- many_models %>%
+  mutate(exclusivity = map(topic_model, exclusivity),
+         semantic_coherence = map(topic_model, semanticCoherence, songs_sparse),
+         eval_heldout = map(topic_model, eval.heldout, heldout$missing),
+         residual = map(topic_model, checkResiduals, songs_sparse),
+         bound =  map_dbl(topic_model, function(x) max(x$convergence$bound)),
+         lfact = map_dbl(topic_model, function(x) lfactorial(x$settings$dim$K)),
+         lbound = bound + lfact,
+         iterations = map_dbl(topic_model, function(x) length(x$convergence$bound)))
+
+un_k_result <- un_many_models %>%
+  mutate(exclusivity = map(topic_model, exclusivity),
+         semantic_coherence = map(topic_model, semanticCoherence, un_songs_sparse),
+         eval_heldout = map(topic_model, eval.heldout, un_heldout$missing),
+         residual = map(topic_model, checkResiduals, un_songs_sparse),
+         bound =  map_dbl(topic_model, function(x) max(x$convergence$bound)),
+         lfact = map_dbl(topic_model, function(x) lfactorial(x$settings$dim$K)),
+         lbound = bound + lfact,
+         iterations = map_dbl(topic_model, function(x) length(x$convergence$bound)))
+
+k_result %>%
+  transmute(K,
+            `Lower bound` = lbound,
+            Residuals = map_dbl(residual, "dispersion"),
+            `Semantic coherence` = map_dbl(semantic_coherence, mean),
+            `Held-out likelihood` = map_dbl(eval_heldout, "expected.heldout")) %>%
+  gather(Metric, Value, -K) %>%
+  ggplot(aes(K, Value, color = Metric)) +
+  geom_line(size = 1.5, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~Metric, scales = "free_y") +
+  labs(x = "K (number of topics)",
+       y = NULL,
+       title = "Model diagnostics by number of topics (Charted)")
+
+un_k_result %>%
+  transmute(K,
+            `Lower bound` = lbound,
+            Residuals = map_dbl(residual, "dispersion"),
+            `Semantic coherence` = map_dbl(semantic_coherence, mean),
+            `Held-out likelihood` = map_dbl(eval_heldout, "expected.heldout")) %>%
+  gather(Metric, Value, -K) %>%
+  ggplot(aes(K, Value, color = Metric)) +
+  geom_line(size = 1.5, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~Metric, scales = "free_y") +
+  labs(x = "K (number of topics)",
+       y = NULL,
+       title = "Model diagnostics by number of topics (Uncharted)")
+
+k_result %>%
+  select(K, exclusivity, semantic_coherence) %>%
+  filter(K %in% c(10, 20, 40, 50, 60, 70, 80, 100, 120, 150)) %>%
+  unnest() %>%
+  mutate(K = as.factor(K)) %>%
+  ggplot(aes(semantic_coherence, exclusivity, color = K)) +
+  geom_point(size = 2, alpha = 0.7) +
+  labs(x = "Semantic coherence",
+       y = "Exclusivity",
+       title = "Comparing exclusivity and semantic coherence among charted songs",
+       subtitle = "Models with fewer topics have higher semantic coherence for more topics, but lower exclusivity")
+
+un_k_result %>%
+  select(K, exclusivity, semantic_coherence) %>%
+  filter(K %in% c(10, 20, 40, 50, 60, 70, 80, 100, 120, 150)) %>%
+  unnest() %>%
+  mutate(K = as.factor(K)) %>%
+  ggplot(aes(semantic_coherence, exclusivity, color = K)) +
+  geom_point(size = 2, alpha = 0.7) +
+  labs(x = "Semantic coherence",
+       y = "Exclusivity",
+       title = "Comparing exclusivity and semantic coherence among uncharted songs",
+       subtitle = "Models with fewer topics have higher semantic coherence for more topics, but lower exclusivity")
+
+```
+
+We're checking for a lot with these graphs. Semantic coherence measures the frequency of probable words in a given topic co-occurring together across our corpus. We want that to be high when determining the number of topics to make. We also want held-out likelihood to be high, meaning that the topic model will perform well on data that we have withheld from the model for testing. We want our residuals to be low though. Based on this first graph, we might be okay setting 120 topics for our model. The second graph, which plots exclusivity scores against semantic coherence scores, seems to suggest this too. As you can see the grouping of dots that have the highest exclusivity (highest degree of exclusion among words per topics) and highest semantic coherence represent our model when trained with 120 clusters. So, let's build our new model with 120 clusters and see some results!
+
+```{r}
+
+topic_model <- k_result %>%
+  filter(K == 120) %>%
+  pull(topic_model) %>%
+  .[[1]]
+
+topic_model
+
+td_beta <- tidy(topic_model)
+
+td_gamma <- tidy(topic_model, matrix = "gamma",
+                 document_names =
+                   rownames(songs_sparse))
+
+#plotting words
+library(ggthemes)
+library(dplyr)
+library(tidyverse)
+library(scales)
+library(knitr)
+
+top_terms <- td_beta %>%
+  arrange(beta) %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  arrange(-beta) %>%
+  select(topic, term) %>%
+  summarise(terms = list(term)) %>%
+  mutate(terms = map(terms, paste, collapse = ", ")) %>% 
+  unnest()
+
+gamma_terms <- td_gamma %>%
+  group_by(topic) %>%
+  summarise(gamma = mean(gamma)) %>%
+  arrange(desc(gamma)) %>%
+  left_join(top_terms, by = "topic") %>%
+  mutate(topic = paste0("Topic ", topic),
+         topic = reorder(topic, gamma))
+
+gamma_terms %>%
+  top_n(20, gamma) %>%
+  ggplot(aes(topic, gamma, label = terms, fill = topic)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(hjust = 0, nudge_y = 0.0005, size = 3) +
+  coord_flip() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0, 0.09),
+                     labels = percent_format()) +
+  theme_tufte(ticks = FALSE) +
+  theme(plot.title = element_text(size = 16),
+        plot.subtitle = element_text(size = 13)) +
+  labs(x = NULL, y = expression(gamma),
+       title = "Top 20 topics by prevalence in the Playback.fm corpus (charted)",
+       subtitle = "With the top words that contribute to each topic")
+
+gamma_terms %>%
+  select(topic, gamma, terms) %>%
+  kable(digits = 3, 
+        col.names = c("Topic", "Expected topic proportion", "Top 7 terms"))
+
+un_topic_model <- un_k_result %>%
+  filter(K == 120) %>%
+  pull(topic_model) %>%
+  .[[1]]
+
+un_td_beta <- tidy(un_topic_model)
+
+un_td_gamma <- tidy(un_topic_model, matrix = "gamma",
+                 document_names =
+                   rownames(un_songs_sparse))
+
+#plotting words
+library(ggthemes)
+library(dplyr)
+library(tidyverse)
+library(scales)
+library(knitr)
+
+un_top_terms <- un_td_beta %>%
+  arrange(beta) %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  arrange(-beta) %>%
+  select(topic, term) %>%
+  summarise(terms = list(term)) %>%
+  mutate(terms = map(terms, paste, collapse = ", ")) %>% 
+  unnest()
+
+un_gamma_terms <- un_td_gamma %>%
+  group_by(topic) %>%
+  summarise(gamma = mean(gamma)) %>%
+  arrange(desc(gamma)) %>%
+  left_join(un_top_terms, by = "topic") %>%
+  mutate(topic = paste0("Topic ", topic),
+         topic = reorder(topic, gamma))
+
+un_gamma_terms %>%
+  top_n(20, gamma) %>%
+  ggplot(aes(topic, gamma, label = terms, fill = topic)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(hjust = 0, nudge_y = 0.0005, size = 3) +
+  coord_flip() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0, 0.09),
+                     labels = percent_format()) +
+  theme_tufte(ticks = FALSE) +
+  theme(plot.title = element_text(size = 16),
+        plot.subtitle = element_text(size = 13)) +
+  labs(x = NULL, y = expression(gamma),
+       title = "Top 20 topics by prevalence in the Playback.fm corpus (uncharted)",
+       subtitle = "With the top words that contribute to each topic")
+
+un_gamma_terms %>%
+  select(topic, gamma, terms) %>%
+  kable(digits = 3, 
+        col.names = c("Topic", "Expected topic proportion", "Top 7 terms"))
+
+
+```
+
+These topics are interesting.
+
+# Final Explanations
+
+It would be interesting to now take what we've done and track a few relationships with a new group, half a decade's worth of songs coming from 2010 - 2015 (not inclusive). Essentially, we're going to build this "test set" as we did with our large corpus and then perform a few things:
+
+1. We'll use our best classifier, K-SVM to see how "well" on one run it predicts whether or not any of the songs from this new set chart based on what it learns from our larger set (we choose one run because we don't expect it to perform amazingly better than it has before).
+2. We'll reexamine some of the relationships we tracked earlier (song duration over time, mean repetition over time, pronoun usage, repetition over length of song, etc.) to see how our new data interacts with some of the trends we identified earlier.
+
+So let's first collect our data from the song csv files we get from our python script.
+
+```{r}
+rm_list <- objects()
+keep <- which(rm_list == 'dset')
+rm_list <- rm_list[-c(keep)]
+rm(list = rm_list)
+
+```
+
+```{r}
+
+library(dplyr)
+library(tidyverse)
+
+# create empty buckets before iteration
+data_true_final <- NULL
+data_false_final <- NULL
+
+# loop over years and concatenate with beginning of file string
+for(i in 2010:2014){
+  file_str <- paste('C:\\Users\\cbper\\song_charts\\playback_meta_data_', as.character(i), '.csv', sep='')
+  # read in new csv string
+  data <- read.csv(file_str, encoding='UTF-8', stringsAsFactors = F)
+  # subset by duplicate rows first
+  no_dup <- data[!duplicated(data$Lyrics), ]
+  breaks <- tibble()
+  for(w in 1:length(no_dup$X)){
+    # split each lyric column by "\n"
+    s_true <- strsplit(no_dup$Lyrics[w], "\n")
+    # measure the length of each break to get total number of stanzas
+    temp1 <- tibble("stanzas" = length(which(s_true[[1]] == '')))
+    breaks <- rbind(breaks, temp1)
+  }
+  # bind breaks dataframe to current one
+  d <- cbind(no_dup, breaks)
+  d$year_chart <- i
+  # subset to false and true
+  data_false <- subset(d, chart == 'False')
+  data_true <- subset(d, chart == 'True')
+  # check if any duplicates exist
+  if(i != 2010){
+    data_true_comb <- rbind(data_true_final, data_true)
+    data_false_comb <- rbind(data_false_final, data_false)
+    all_comb <- rbind(data_true_comb, data_false_comb)
+    all_bet <- all_comb[!(duplicated(all_comb$Lyrics) | duplicated(all_comb$Lyrics, fromLast = TRUE)),]
+    data_true <- subset(all_bet, chart == "True" & year_chart == i)
+    data_false <- subset(all_bet, chart == "False" & year_chart == i)
+  }
+  # subset by found metadata
+  data_found_true <- subset(data_true, between(release_date, i-1, i) & Lyrics != '' & stanzas > 1 & duration != '')
+  data_found_false <- subset(data_false, between(release_date, i-1, i) & Lyrics != '' & stanzas > 1 & duration != '')
+  j <- 0
+  k <- 0
+  # cap all years at 25 for false and true (charted)
+  while(length(data_found_true$X) < 25){
+    j <- j + 1
+    data_sub <- subset(data_true, between(release_date, i-1, i) & Lyrics != '' & stanzas > 1 & duration == '')
+    data_found_true <- rbind(data_found_true, data_sub[j,])
+  }
+  while(length(data_found_false$X) < 25){
+    k <- k + 1
+    data_subs <- subset(data_false, between(release_date, i-1, i) & Lyrics != '' & stanzas > 1 & duration == '')
+    data_found_false <- rbind(data_found_false, data_subs[k,])
+  }
+  if(length(data_found_true$X) >= 25){
+    data_found_true <- data_found_true[0:25,]
+  }
+  if(length(data_found_false$X) >= 25){
+    if(i != 2010){
+      # shuffle to avoid too many from the same artist/album
+      set.seed(1234)
+      data_found_false <- data_found_false[sample(1:nrow(data_found_false)),]
+    }
+    data_found_false <- data_found_false[0:25,]
+  }
+  data_true_final <- rbind(data_true_final, data_found_true)
+  data_false_final <- rbind(data_false_final, data_found_false)
+}
+
+# bind charted and not charted info together
+dataset <- rbind(data_true_final, data_false_final)
+
+missing <- which(dataset$duration == '')
+
+# change all actual albums to albums
+dataset$album_single[dataset$total_tracks > 4] <- 'Album'
+dataset$album_single[dataset$total_tracks <= 4] <- 'Single'
+
+# keep track numbers
+dataset$track_number <- gsub("Track '(\\w+)'", perl = TRUE, replacement = '\\1', dataset$track_number)
+
+# change time to numeric
+for(i in 1:length(dataset$duration)){
+  s <- strsplit(dataset$duration[i], ":")
+  dataset$duration[i] <- (as.numeric(s[[1]][1])*60 + as.numeric(s[[1]][2]))
+}
+
+dataset$duration <- as.numeric(dataset$duration)
+
+```
+
+```{r}
+# Song structure and repetition
+# We could maybe use levenshtein distance to measure either stanzas against stanzas or lines against lines and then calculate a mean "distance" for each song. Perhaps charted songs will have a higher mean distance? (less similar in structure)
+library(stringdist)
+# breaking songs into stanzas
+# Initialize empty tibbles and vector
+mean_l_dist <- vector()
+final_stanzas <- tibble()
+final_dist <- tibble()
+for(v in 1:length(dataset$Lyrics)){
+  # split lyrics at iterator (v) by newline character
+  s <- strsplit(dataset$Lyrics[v], "\n")
+  # record empty entries as breaks
+  breaks <- which(s[[1]] == '')
+  # initialize empty stanzas tibble
+  stanzas <- tibble()
+  for(i in 1:length(breaks)){
+    # when iterator = 1, we need to index the s list from 0
+    if(i == 1){
+      temp <- tibble("Artist" = dataset$Artist[v], "Title" = dataset$Title[v],
+                     "Album" = dataset$album_name[v], "Stanza" = paste(s[[1]][0:breaks[i]], collapse = " "))
+      stanzas <- rbind(stanzas, temp)
+    }
+    # when we've reached the end of the breaks vector, we need index from the current break to the end of the split list
+    else if(i == length(breaks)){
+      temp <- tibble("Artist" = dataset$Artist[v], "Title" = dataset$Title[v],
+                     "Album" = dataset$album_name[v], "Stanza" = paste(s[[1]][breaks[i]:length(s[[1]])], collapse = " "))
+      stanzas <- rbind(stanzas, temp)
+    }
+    # otherwise, we need to index from the previous break to the current one
+    else{
+      temp <- tibble("Artist" = dataset$Artist[v], "Title" = dataset$Title[v],
+                     "Album" = dataset$album_name[v], "Stanza" = paste(s[[1]][breaks[i-1]:breaks[i]], collapse = " "))
+      stanzas <- rbind(stanzas, temp)
+    }
+  }
+  # to avoid confusion, collect stanzas into one final variable
+  f_stanzas <- stanzas
+  #initialize distance tibble
+  dist <- tibble()
+  # iterate from 1 and i + 1 in order to compare the distances of each stanza
+  for(i in 1:length(f_stanzas$Stanza)){
+    for(j in i+1:length(f_stanzas$Stanza)){
+      s_dist <- stringdist(f_stanzas$Stanza[i], f_stanzas$Stanza[j])
+      tb <- tibble("Doc" = v, "Index1" = i, "String1" = f_stanzas$Stanza[i],
+                   "Index2" = j, "String2" = f_stanzas$Stanza[j], "Dist" = s_dist)
+      dist <- rbind(dist, tb)
+    }
+  }
+  # remove na rows (ex. stanza 3 will not check for those preceding it, so it will have na rows)
+  keep_dist <- subset(dist, (!is.na(dist[,5])))
+  mean_l_dist[v] <- mean(keep_dist$Dist)
+  final_stanzas <- rbind(final_stanzas, f_stanzas)
+  final_dist <- rbind(final_dist, keep_dist)
+}
+
+dataset$m_l_dist <- mean_l_dist
+
+
+```
+
+```{r}
+# group stanza distances by doc id and subset by mean and standard deviation
+grouped_dist <- final_dist %>% group_by(Doc)
+mean_sd <- grouped_dist %>% summarise(
+  mean_dist = mean(Dist),
+  sd_dist = sd(Dist)
+)
+
+# subset threshold *could* be mean_dist - sd_dist for each song
+threshold <- vector()
+for(p in 1:length(mean_sd$Doc)){
+  threshold[p] <- mean_sd$mean_dist[p] - mean_sd$sd_dist[p]
+}
+
+# add threshold vector to dataframe
+mean_sd$threshold <- threshold
+
+#subset each row of grouped_dist by threshold value
+rep <- vector()
+for(b in 1:250){
+  doc <- subset(grouped_dist, Doc == b)
+  repeated <- subset(doc, Dist <= threshold[b])
+  rep[b] <- length(repeated$Dist)/length(doc$Doc)
+}
+
+dataset$rep <- rep
+
+```
+
+```{r}
+library(udpipe)
+
+# gets an english dictionary
+dl <- udpipe_download_model(language = "english")
+udmodel_english <- udpipe_load_model(file = "english-ewt-ud-2.3-181115.udpipe")
+
+# initialize empty pos_tags tibble
+pos_tags <- tibble()
+
+# iterate over length of dataset
+for(i in 1:length(dataset$Lyrics)){
+  # text vector to parse
+  txt <- c(dataset$Lyrics[i])
+  temp_pos <- udpipe_annotate(udmodel_english, x = txt)
+  temp_pos.tb <- as_tibble(temp_pos)
+  # only grabbing doc_id, token, lemma, upos, xpos, and feats 
+  temp_pos.tb <- temp_pos.tb[,c(6:10)]
+  # add in artist and title information to frame
+  temp_pos.tb$Artist <- dataset$Artist[i]
+  temp_pos.tb$Title <- dataset$Title[i]
+  temp_pos.tb$Doc <- i
+  # bind temporary iterated results to intial pos tibble
+  pos_tags <- rbind(pos_tags, temp_pos.tb)
+}
+
+# subset by pronouns
+pron_pos <- subset(pos_tags, upos == 'PRON')
+
+# group pos data by doc id
+grouped_pron_pos <- pron_pos %>%
+  group_by(Doc) %>%
+  summarise(
+    total_pron = length(upos),
+    rel_first = length(grep('Person=3', feats))/length(upos) * 100,
+    rel_second = length(grep('Person=2', feats))/length(upos) * 100,
+    rel_third = length(grep('Person=1', feats))/length(upos) * 100
+  )
+
+library(tidyverse)
+grouped_pron_end <- grouped_pron_pos %>%
+  gather(rel, cnt, rel_first:rel_third) %>%
+  group_by(Doc) %>%
+  slice(which.max(cnt))
+
+dataset$rel <- grouped_pron_end$rel
+dataset$rel_prop <- grouped_pron_end$cnt
+
+# Encoding categorical data
+dataset$rel <- factor(dataset$rel,
+                               levels = c('rel_first', 'rel_second', 'rel_third'),
+                               labels = c(1, 2, 3))
+
+```
+
+```{r}
+rm_list <- objects()
+keep <- which(rm_list == 'dataset' | rm_list == 'dset')
+rm_list <- rm_list[-c(keep)]
+rm(list = rm_list)
+
+```
+
+```{r}
+# reload some libraries
+library(dplyr)
+library(tidyverse)
+
+# add ttr to our new variable
+unique_len <- sapply(strsplit(dataset$Lyrics, split= " "), unique) %>%
+  sapply(length)
+comment_sep <- sapply(strsplit(dataset$Lyrics, split = " "), length)
+
+dataset$ttr <- unique_len/comment_sep
+
+# encode some categorical variables
+d_true <- subset(dataset, chart == 'True')
+d_false <- subset(dataset, chart == 'False')
+d_true$chart <- 1
+d_false$chart <- 0
+dataset <- rbind(d_true, d_false)
+dataset$rel <- as.factor(dataset$rel)
+dataset$chart <- as.factor(dataset$chart)
+
+```
+
+```{r}
+
+# selecting independent and dependent features for our model
+test_set <- dataset[,c(9, 13, 14, 16, 17, 19, 12)]
+training_set <- dset[,c(8, 12, 13, 16, 17, 19, 11)]
+
+# Feature Scaling
+training_set[,c(1, 2, 4, 6)] = scale(training_set[,c(1, 2, 4, 6)])
+test_set[,c(1, 2, 4, 6)] = scale(test_set[,c(1, 2, 4, 6)])
+
+library(e1071)
+
+ks_classifier = svm(formula = chart ~.,
+                data = training_set,
+                type = 'C-classification',
+                kernel = 'radial')
+
+y_pred <- predict(ks_classifier, test_set[-7])
+
+ks_cm <- table(test_set[, 7], y_pred)
+
+ks_cm
+
+```
+
+We were correct, with one run of our most powerful classifier for our dataset, the model records a 56% accuracy, which is not good. Further tuning and evaluation is not necessary at the moment. However, it is interesting that the model predicts uncharted songs fairly well. As you can see, if we just take the true uncharted predictions over the total observations (106/125), our model predicts this class with 85% accuracy. Without further testing, we can't say whether or not this particular observation was the result of chance. In future runs, our model could swing the other direction, predicting more correct charted observations. However, we can hypothesize that this result may occur because of the general shape of our data. So let's first look at a few scatterplot observations that will highlight why our model might have done better classifying uncharted songs with the new test set we've added (songs from 2010 - 2015).
+
+See some plotted relationships below:
+
+```{r}
+# encoding new results
+dset_chart <- subset(dset, chart == 1)
+dset_un <- subset(dset, chart == 0)
+d_true <- subset(dataset, chart == 1)
+d_false <- subset(dataset, chart == 0)
+d_true$chart <- 'new_1'
+d_false$chart <- 'new_0'
+dataset <- rbind(d_true, d_false)
+dataset$chart <- as.factor(dataset$chart)
+
+# scatterplot of song duration over time
+ggplot() +
+  geom_point(aes(x = year_chart, y = duration, color = chart), dset) +
+  geom_smooth(aes(x = year_chart, y = duration, col = chart), data = dset_chart, method = "lm") +
+  geom_smooth(aes(x = year_chart, y = duration, col = chart), data = dset_un, method = "lm") +
+  geom_point(aes(x = year_chart, y = duration, color = chart), dataset) +
+  labs(
+    x = 'Year Charted',
+    y = 'Duration (s)',
+    title = "Scatterplot of Duration over Time"
+  )
+
+# scatterplot of repetition over year charted
+ggplot() +
+  geom_point(aes(x = year_chart, y = rep, color = chart), dset) +
+  geom_point(aes(x = year_chart, y = rep, color = chart), dataset) +
+  labs(
+    x = "Year Charted",
+    y = "Percentage of Repeated Stanzas",
+    title = "Scatterplot of Proportion of Repeated Stanzas over Time"
+  )
+
+# Scatterplot of data
+ggplot() +
+  geom_point(aes(x=duration, y=rep, color=chart), dset) +
+  geom_point(aes(x = duration, y = rep, color = chart), dataset) +
+  labs(
+    x = "Duration (s)",
+    y = "Percentage of Repeated Stanzas",
+    title = "Scatterplot of Repeated Stanzas Against Song Duration"
+  )
+
+# Scatterplot of data
+ggplot() +
+  geom_point(aes(x=stanzas, y=ttr, color=chart), data = dset) +
+  geom_point(aes(x=stanzas, y=ttr, color=chart), data = dataset) +
+  labs(
+    x = "Number of Stanzas",
+    y = "Type Token Ratio",
+    title = "Scatterplot of Type Token Ratio Against Number of Stanzas"
+  )
+```
+
+```{r}
+# split datset into charted and uncharted
+ch_pron <- dset[1:1250,]
+nc_pron <- dset[1251:2500,]
+new_ch <- dataset[1:125,]
+new_nc <- dataset[126:250,]
+
+# group data by year charted and count and sort each relative pronoun winner per song
+year_rel_c <- ch_pron %>%
+  group_by(year_chart) %>%
+  count(rel, sort = TRUE) %>%
+  arrange(desc(year_chart))
+
+year_rel_nc <- nc_pron %>%
+  group_by(year_chart) %>%
+  count(rel, sort = TRUE) %>%
+  arrange(desc(year_chart))
+
+# Plot both sets of results
+ggplot(data = year_rel_c) +
+  geom_smooth(
+    mapping = aes(year_chart, n, color = rel),
+    show.legend = FALSE
+  ) +
+  geom_point(aes(year_chart, n, colour = rel)) +
+  labs(
+    x = "Year Charted",
+    y = "Number of Songs per Pronoun",
+    title = "Proportion of Pronoun Type Usage Over Time (Charted)"
+  )
+
+ggplot(data = year_rel_nc) +
+  geom_smooth(
+    mapping = aes(year_chart, n, color = rel),
+    show.legend = FALSE
+  ) +
+  geom_point(aes(year_chart, n, colour = rel)) +
+  labs(
+    x = "Year Charted",
+    y = "Number of Songs per Pronoun",
+    title = "Proportion of Pronoun Type Usage Over Time (Uncharted)"
+  )
+
+# group data by year charted and count and sort each relative pronoun winner per song
+year_rel_new <- new_ch %>%
+  group_by(year_chart) %>%
+  count(rel, sort = TRUE) %>%
+  arrange(desc(year_chart))
+
+year_rel_nc_new <- new_nc %>%
+  group_by(year_chart) %>%
+  count(rel, sort = TRUE) %>%
+  arrange(desc(year_chart))
+
+# Plot both sets of results
+ggplot(data = year_rel_new) +
+  geom_point(aes(year_chart, n, colour = rel)) +
+  labs(
+    x = "Year Charted",
+    y = "Number of Songs per Pronoun",
+    title = "Proportion of Pronoun Type Usage Over Time (Charted)"
+  )
+
+ggplot(data = year_rel_nc_new) +
+  geom_point(aes(year_chart, n, colour = rel)) +
+  labs(
+    x = "Year Charted",
+    y = "Number of Songs per Pronoun",
+    title = "Proportion of Pronoun Type Usage Over Time (Uncharted)"
+  )
+
+```
 
